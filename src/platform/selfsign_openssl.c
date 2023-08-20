@@ -10,7 +10,9 @@ Abstract:
 --*/
 
 #define QUIC_TEST_APIS 1
+#if !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS // NOLINT bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp
+#endif
 
 #include <fcntl.h>
 #ifndef _WIN32
