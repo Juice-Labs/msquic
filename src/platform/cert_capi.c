@@ -1611,7 +1611,7 @@ CxPlatCertVerify(
 
     BOOLEAN Result = FALSE;
     BYTE HashBuf[CXPLAT_CERTIFICATE_MAX_HASH_SIZE] = { 0 };
-    BCRYPT_KEY_HANDLE PublicKey = (ULONG_PTR)NULL;
+    BCRYPT_KEY_HANDLE PublicKey = (BCRYPT_KEY_HANDLE)NULL;
     CXPLAT_SIGN_PADDING Padding = { 0 };
 
     NTSTATUS Status =

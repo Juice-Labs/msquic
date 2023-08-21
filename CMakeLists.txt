@@ -73,11 +73,7 @@ set(SELF_DIR "$\{SELF_DIR\}")
 enable_testing()
 
 # Set the default TLS method for each platform.
-if (WIN32)
-    set(QUIC_TLS "schannel" CACHE STRING "TLS Library to use")
-else()
-    set(QUIC_TLS "openssl" CACHE STRING "TLS Library to use")
-endif()
+set(QUIC_TLS "openssl" CACHE STRING "TLS Library to use")
 
 option(QUIC_BUILD_TOOLS "Builds the tools code" OFF)
 option(QUIC_BUILD_TEST "Builds the test code" OFF)
@@ -200,7 +196,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${QUIC_OUTPUT_DIR})
 set(QUIC_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/inc)
 
 if (WIN32)
-    set(QUIC_WARNING_FLAGS /WX /W4 /sdl /wd4206 CACHE INTERNAL "")
+    # set(QUIC_WARNING_FLAGS /WX /W4 /sdl /wd4206 CACHE INTERNAL "")
+    set(QUIC_WARNING_FLAGS "-Wno-narrowing")
     set(QUIC_COMMON_FLAGS "")
 
     include(CheckCCompilerFlag)
