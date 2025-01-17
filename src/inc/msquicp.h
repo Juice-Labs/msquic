@@ -5,7 +5,8 @@
 
 Abstract:
 
-    Private definitions for MsQuic.
+    Private definitions for MsQuic. The are not meant for general consumption
+    and are subject to change without warning.
 
 --*/
 
@@ -115,6 +116,7 @@ typedef struct QUIC_PRIVATE_TRANSPORT_PARAMETER {
 #endif
 #define QUIC_PARAM_GLOBAL_IN_USE                        0x81000004  // BOOLEAN
 #define QUIC_PARAM_GLOBAL_DATAPATH_FEATURES             0x81000005  // uint32_t
+#define QUIC_PARAM_GLOBAL_PLATFORM_WORKER_POOL          0x81000006  // CXPLAT_WORKER_POOL*
 
 //
 // The different private parameters for Configuration.
@@ -133,6 +135,15 @@ typedef struct QUIC_PRIVATE_TRANSPORT_PARAMETER {
 #define QUIC_PARAM_CONN_TEST_TRANSPORT_PARAMETER        0x85000002  // QUIC_PRIVATE_TRANSPORT_PARAMETER
 #define QUIC_PARAM_CONN_KEEP_ALIVE_PADDING              0x85000003  // uint16_t
 #define QUIC_PARAM_CONN_DISABLE_VNE_TP_GENERATION       0x85000004  // BOOLEAN
+
+#ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
+#define QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV          0x88000000  // uint64_t
+#endif
+
+#define QUIC_ENABLE_PRIVATE_NMR_PROVIDER(...) \
+do { \
+    MSQUIC_NPI_ID.Data1 = 0xDEADC0DE; \
+} while (FALSE)
 
 #if defined(__cplusplus)
 }

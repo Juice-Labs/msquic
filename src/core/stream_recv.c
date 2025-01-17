@@ -47,7 +47,6 @@ QuicStreamRecvShutdown(
         Stream->Flags.RemoteCloseAcked = TRUE;
         Stream->Flags.ReceiveEnabled = FALSE;
         Stream->Flags.ReceiveDataPending = FALSE;
-        Stream->Flags.ReceiveCallPending = FALSE;
         goto Exit;
     }
 
@@ -73,7 +72,6 @@ QuicStreamRecvShutdown(
     //
     Stream->Flags.ReceiveEnabled = FALSE;
     Stream->Flags.ReceiveDataPending = FALSE;
-    Stream->Flags.ReceiveCallPending = FALSE;
 
     Stream->RecvShutdownErrorCode = ErrorCode;
     Stream->Flags.SentStopSending = TRUE;
@@ -131,10 +129,7 @@ QuicStreamRecvQueueFlush(
     // The caller has indicated data is ready to be indicated to the
     // application. Queue a FLUSH_RECV if one isn't already queued.
     //
-
-    if (Stream->Flags.ReceiveEnabled &&
-        Stream->Flags.ReceiveDataPending &&
-        !Stream->Flags.ReceiveCallPending) {
+    if (Stream->Flags.ReceiveEnabled && Stream->Flags.ReceiveDataPending) {
 
         if (AllowInlineFlush) {
             QuicStreamRecvFlush(Stream);
@@ -159,6 +154,86 @@ QuicStreamRecvQueueFlush(
                     0);
             }
         }
+    }
+}
+
+//
+// Deliver a notification to the app that the peer has aborted their send path.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicStreamIndicatePeerSendAbortedEvent(
+    _In_ QUIC_STREAM* Stream,
+    _In_ QUIC_VAR_INT ErrorCode
+    )
+{
+    QuicTraceLogStreamInfo(
+        RemoteCloseReset,
+        Stream,
+        "Closed remotely (reset)");
+    QUIC_STREAM_EVENT Event;
+    Event.Type = QUIC_STREAM_EVENT_PEER_SEND_ABORTED;
+    Event.PEER_SEND_ABORTED.ErrorCode = ErrorCode;
+    QuicTraceLogStreamVerbose(
+        IndicatePeerSendAbort,
+        Stream,
+        "Indicating QUIC_STREAM_EVENT_PEER_SEND_ABORTED (0x%llX)",
+        ErrorCode);
+    (void)QuicStreamIndicateEvent(Stream, &Event);
+}
+
+//
+// Processes a received RELIABLE_RESET frame's payload.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicStreamProcessReliableResetFrame(
+    _In_ QUIC_STREAM* Stream,
+    _In_ QUIC_VAR_INT ErrorCode,
+    _In_ QUIC_VAR_INT ReliableOffset
+    )
+{
+    if (!Stream->Connection->State.ReliableResetStreamNegotiated) {
+        //
+        // The peer tried to use an exprimental feature without
+        // negotiating first. Kill the connection.
+        //
+        QuicTraceLogStreamWarning(
+            ReliableResetNotNegotiatedError,
+            Stream,
+            "Received ReliableReset without negotiation.");
+        QuicConnTransportError(Stream->Connection, QUIC_ERROR_TRANSPORT_PARAMETER_ERROR);
+        return;
+    }
+
+    if (Stream->RecvMaxLength == 0 || ReliableOffset < Stream->RecvMaxLength) {
+        //
+        // As outlined in the spec, if we receive multiple CLOSE_STREAM frames, we only accept strictly
+        // decreasing offsets.
+        //
+        Stream->RecvMaxLength = ReliableOffset;
+        Stream->Flags.RemoteCloseResetReliable = TRUE;
+
+        QuicTraceLogStreamInfo(
+            ReliableRecvOffsetSet,
+            Stream,
+            "Reliable recv offset set to %llu",
+            ReliableOffset);
+    }
+
+    if (Stream->RecvBuffer.BaseOffset >= Stream->RecvMaxLength) {
+        QuicTraceEvent(
+            StreamRecvState,
+            "[strm][%p] Recv State: %hhu",
+            Stream,
+            QuicStreamRecvGetState(Stream));
+        QuicStreamIndicatePeerSendAbortedEvent(Stream, ErrorCode);
+        QuicStreamRecvShutdown(Stream, TRUE, ErrorCode);
+    } else {
+        //
+        // We still have data to deliver to the app, just cache the error code for later.
+        //
+        Stream->RecvShutdownErrorCode = ErrorCode;
     }
 }
 
@@ -241,20 +316,7 @@ QuicStreamProcessResetFrame(
             QuicStreamRecvGetState(Stream));
 
         if (!Stream->Flags.SentStopSending) {
-            QuicTraceLogStreamInfo(
-                RemoteCloseReset,
-                Stream,
-                "Closed remotely (reset)");
-
-            QUIC_STREAM_EVENT Event;
-            Event.Type = QUIC_STREAM_EVENT_PEER_SEND_ABORTED;
-            Event.PEER_SEND_ABORTED.ErrorCode = ErrorCode;
-            QuicTraceLogStreamVerbose(
-                IndicatePeerSendAbort,
-                Stream,
-                "Indicating QUIC_STREAM_EVENT_PEER_SEND_ABORTED (0x%llX)",
-                ErrorCode);
-            (void)QuicStreamIndicateEvent(Stream, &Event);
+            QuicStreamIndicatePeerSendAbortedEvent(Stream, ErrorCode);
         }
 
         //
@@ -380,9 +442,18 @@ QuicStreamProcessStreamFrame(
         goto Error;
     }
 
-    if (EndOffset > Stream->RecvMaxLength) {
+    if (Stream->Flags.RemoteCloseResetReliable) {
+        if (Stream->RecvBuffer.BaseOffset >= Stream->RecvMaxLength) {
+            //
+            // We've aborted reliably, but the stream goes past reliable offset, we can just
+            // ignore it.
+            //
+            Status = QUIC_STATUS_SUCCESS;
+            goto Error;
+        }
+    } else if (EndOffset > Stream->RecvMaxLength) {
         //
-        // Frame goes past the FIN.
+        // Frame goes past the FIN, and the stream is not reset reliably.
         //
         Status = QUIC_STATUS_INVALID_PARAMETER;
         goto Error;
@@ -467,7 +538,9 @@ QuicStreamProcessStreamFrame(
         }
     }
 
-    if (ReadyToDeliver) {
+    if (ReadyToDeliver &&
+        (Stream->RecvBuffer.RecvMode == QUIC_RECV_BUF_MODE_MULTIPLE ||
+         Stream->RecvBuffer.ReadPendingLength == 0)) {
         Stream->Flags.ReceiveDataPending = TRUE;
         QuicStreamRecvQueueFlush(
             Stream,
@@ -505,7 +578,7 @@ _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QuicStreamRecv(
     _In_ QUIC_STREAM* Stream,
-    _In_ CXPLAT_RECV_PACKET* Packet,
+    _In_ QUIC_RX_PACKET* Packet,
     _In_ QUIC_FRAME_TYPE FrameType,
     _In_ uint16_t BufferLength,
     _In_reads_bytes_(BufferLength)
@@ -617,6 +690,20 @@ QuicStreamRecv(
         break;
     }
 
+    case QUIC_FRAME_RELIABLE_RESET_STREAM: {
+        QUIC_RELIABLE_RESET_STREAM_EX Frame;
+        if (!QuicReliableResetFrameDecode(BufferLength, Buffer, Offset, &Frame)) {
+            return QUIC_STATUS_INVALID_PARAMETER;
+        }
+
+        QuicStreamProcessReliableResetFrame(
+            Stream,
+            Frame.ErrorCode,
+            Frame.ReliableSize);
+
+        break;
+    }
+
     default: // QUIC_FRAME_STREAM*
     {
         QUIC_STREAM_EX Frame;
@@ -675,7 +762,7 @@ QuicStreamOnBytesDelivered(
 
     if (Stream->RecvWindowBytesDelivered >= RecvBufferDrainThreshold) {
 
-        uint32_t TimeNow = CxPlatTimeUs32();
+        uint64_t TimeNow = CxPlatTimeUs64();
 
         //
         // Limit stream FC window growth by the connection FC window size.
@@ -683,9 +770,9 @@ QuicStreamOnBytesDelivered(
         if (Stream->RecvBuffer.VirtualBufferLength <
             Stream->Connection->Settings.ConnFlowControlWindow) {
 
-            uint32_t TimeThreshold = (uint32_t)
+            uint64_t TimeThreshold =
                 ((Stream->RecvWindowBytesDelivered * Stream->Connection->Paths[0].SmoothedRtt) / RecvBufferDrainThreshold);
-            if (CxPlatTimeDiff32(Stream->RecvWindowLastUpdate, TimeNow) <= TimeThreshold) {
+            if (CxPlatTimeDiff64(Stream->RecvWindowLastUpdate, TimeNow) <= TimeThreshold) {
 
                 //
                 // Buffer tuning:
@@ -709,13 +796,13 @@ QuicStreamOnBytesDelivered(
                 QuicTraceLogStreamVerbose(
                     IncreaseRxBuffer,
                     Stream,
-                    "Increasing max RX buffer size to %u (MinRtt=%u; TimeNow=%u; LastUpdate=%u)",
+                    "Increasing max RX buffer size to %u (MinRtt=%llu; TimeNow=%llu; LastUpdate=%llu)",
                     Stream->RecvBuffer.VirtualBufferLength * 2,
                     Stream->Connection->Paths[0].MinRtt,
                     TimeNow,
                     Stream->RecvWindowLastUpdate);
 
-                QuicRecvBufferSetVirtualBufferLength(
+                QuicRecvBufferIncreaseVirtualBufferLength(
                     &Stream->RecvBuffer,
                     Stream->RecvBuffer.VirtualBufferLength * 2);
             }
@@ -782,29 +869,26 @@ QuicStreamRecvFlush(
         return;
     }
 
-    CXPLAT_TEL_ASSERT(!Stream->Flags.ReceiveCallPending);
-
     BOOLEAN FlushRecv = TRUE;
     while (FlushRecv) {
         CXPLAT_DBG_ASSERT(!Stream->Flags.SentStopSending);
 
-        QUIC_BUFFER RecvBuffers[2];
+        QUIC_BUFFER RecvBuffers[3];
         QUIC_STREAM_EVENT Event = {0};
         Event.Type = QUIC_STREAM_EVENT_RECEIVE;
-        Event.RECEIVE.BufferCount = 2;
+        Event.RECEIVE.BufferCount = ARRAYSIZE(RecvBuffers);
         Event.RECEIVE.Buffers = RecvBuffers;
 
         //
         // Try to read the next available buffers.
         //
-        BOOLEAN DataAvailable =
+        BOOLEAN DataAvailable = QuicRecvBufferHasUnreadData(&Stream->RecvBuffer);
+        if (DataAvailable) {
             QuicRecvBufferRead(
                 &Stream->RecvBuffer,
                 &Event.RECEIVE.AbsoluteOffset,
                 &Event.RECEIVE.BufferCount,
                 RecvBuffers);
-
-        if (DataAvailable) {
             for (uint32_t i = 0; i < Event.RECEIVE.BufferCount; ++i) {
                 Event.RECEIVE.TotalBufferLength += RecvBuffers[i].Length;
             }
@@ -837,24 +921,10 @@ QuicStreamRecvFlush(
             Event.RECEIVE.Flags |= QUIC_RECEIVE_FLAG_FIN; // TODO - 0-RTT flag?
         }
 
-        if (Stream->ReceiveCompleteOperation == NULL) {
-            Stream->ReceiveCompleteOperation =
-                QuicOperationAlloc(
-                    Stream->Connection->Worker, QUIC_OPER_TYPE_API_CALL);
-            if (Stream->ReceiveCompleteOperation == NULL) {
-                QuicConnFatalError(
-                    Stream->Connection, QUIC_STATUS_INTERNAL_ERROR, NULL);
-                break;
-            }
-            Stream->ReceiveCompleteOperation->API_CALL.Context->Type = QUIC_API_TYPE_STRM_RECV_COMPLETE;
-            Stream->ReceiveCompleteOperation->API_CALL.Context->STRM_RECV_COMPLETE.Stream = NULL;
-        }
-
-        Stream->Flags.ReceiveEnabled = FALSE;
-        Stream->Flags.ReceiveCallPending = TRUE;
+        Stream->Flags.ReceiveEnabled = Stream->Flags.ReceiveMultiple;
         Stream->Flags.ReceiveCallActive = TRUE;
-        Stream->RecvPendingLength = Event.RECEIVE.TotalBufferLength;
-        Stream->RecvInlineCompletionLength = UINT64_MAX;
+        Stream->RecvPendingLength += Event.RECEIVE.TotalBufferLength;
+        CXPLAT_DBG_ASSERT(Stream->RecvPendingLength <= Stream->RecvBuffer.ReadPendingLength);
 
         QuicTraceEvent(
             StreamAppReceive,
@@ -868,89 +938,75 @@ QuicStreamRecvFlush(
 
         Stream->Flags.ReceiveCallActive = FALSE;
 
-        if (Stream->Flags.SentStopSending || Stream->Flags.RemoteCloseFin) {
-            //
-            // The app has aborted their receive path. No need to process any
-            // more.
-            //
-            break;
-        }
-
-        //
-        // Should be impossible to have already completed inline.
-        //
-        CXPLAT_DBG_ASSERT(Stream->Flags.ReceiveCallPending);
-
-        if (Status == QUIC_STATUS_PENDING) {
-            if (Stream->RecvInlineCompletionLength != UINT64_MAX) {
-                //
-                // The app called StreamReceiveComplete inline to the callback
-                // so treat that as a synchronous completion.
-                //
-                Event.RECEIVE.TotalBufferLength = Stream->RecvInlineCompletionLength;
-            } else {
-                //
-                // If the pending call wasn't completed inline, then receive
-                // callbacks MUST be disabled still.
-                //
-                CXPLAT_TEL_ASSERTMSG_ARGS(
-                    !Stream->Flags.ReceiveEnabled,
-                    "App pended recv AND enabled additional recv callbacks",
-                    Stream->Connection->Registration->AppName,
-                    0, 0);
-                Stream->Flags.ReceiveEnabled = FALSE;
-                break;
-            }
-
-        } else if (Status == QUIC_STATUS_CONTINUE) {
+        if (Status == QUIC_STATUS_CONTINUE) {
             CXPLAT_DBG_ASSERT(!Stream->Flags.SentStopSending);
+            InterlockedExchangeAdd64(
+                (int64_t*)&Stream->RecvCompletionLength,
+                (int64_t)Event.RECEIVE.TotalBufferLength);
+            FlushRecv = TRUE;
             //
             // The app has explicitly indicated it wants to continue to
             // receive callbacks, even if all the data wasn't drained.
             //
             Stream->Flags.ReceiveEnabled = TRUE;
 
+        } else if (Status == QUIC_STATUS_PENDING) {
+            //
+            // The app called the receive complete API inline if
+            // RecvCompletionLength is non-zero.
+            //
+            FlushRecv = (Stream->RecvCompletionLength != 0);
+
         } else {
             //
-            // All other failure status returns are ignored and shouldn't be
-            // used by the app.
+            // All failure status returns shouldn't be used by the app are
+            // ignored. We fire a telemetry event and treat as success.
             //
             CXPLAT_TEL_ASSERTMSG_ARGS(
                 QUIC_SUCCEEDED(Status),
                 "App failed recv callback",
                 Stream->Connection->Registration->AppName,
                 Status, 0);
+
+            InterlockedExchangeAdd64(
+                (int64_t*)&Stream->RecvCompletionLength,
+                (int64_t)Event.RECEIVE.TotalBufferLength);
+            FlushRecv = TRUE;
         }
 
-        FlushRecv = QuicStreamReceiveComplete(Stream, Event.RECEIVE.TotalBufferLength);
+        if (FlushRecv) {
+            uint64_t BufferLength = Stream->RecvCompletionLength;
+            InterlockedExchangeAdd64(
+                (int64_t*)&Stream->RecvCompletionLength,
+                -(int64_t)BufferLength);
+            FlushRecv = QuicStreamReceiveComplete(Stream, BufferLength);
+        }
     }
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicStreamReceiveCompletePending(
-    _In_ QUIC_STREAM* Stream,
-    _In_ uint64_t BufferLength
+    _In_ QUIC_STREAM* Stream
     )
 {
+    InterlockedExchangePointer(
+        (void**)&Stream->ReceiveCompleteOperation,
+        &Stream->ReceiveCompleteOperationStorage);
+
+    uint64_t BufferLength = Stream->RecvCompletionLength;
+    InterlockedExchangeAdd64(
+        (int64_t*)&Stream->RecvCompletionLength,
+        -(int64_t)BufferLength);
+
     if (QuicStreamReceiveComplete(Stream, BufferLength)) {
         QuicStreamRecvFlush(Stream);
     }
-}
 
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-QuicStreamReceiveCompleteInline(
-    _In_ QUIC_STREAM* Stream,
-    _In_ uint64_t BufferLength
-    )
-{
-    CXPLAT_FRE_ASSERTMSG(
-        BufferLength <= Stream->RecvPendingLength,
-        "App overflowed read buffer!");
-
-    CXPLAT_DBG_ASSERT(Stream->RecvInlineCompletionLength == UINT64_MAX); // Indicates double call.
-    Stream->RecvInlineCompletionLength = BufferLength;
+    //
+    // Release the operation reference.
+    //
+    QuicStreamRelease(Stream, QUIC_STREAM_REF_OPERATION);
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -960,17 +1016,12 @@ QuicStreamReceiveComplete(
     _In_ uint64_t BufferLength
     )
 {
-    if (!Stream->Flags.ReceiveCallPending) {
+    if (Stream->Flags.SentStopSending || Stream->Flags.RemoteCloseFin) {
+        //
+        // The app has aborted their receive path. No need to process any more.
+        //
         return FALSE;
     }
-
-    QuicPerfCounterAdd(QUIC_PERF_COUNTER_APP_RECV_BYTES, BufferLength);
-
-    CXPLAT_FRE_ASSERTMSG(
-        BufferLength <= Stream->RecvPendingLength,
-        "App overflowed read buffer!");
-
-    Stream->Flags.ReceiveCallPending = FALSE;
 
     QuicTraceEvent(
         StreamAppReceiveComplete,
@@ -978,28 +1029,37 @@ QuicStreamReceiveComplete(
         Stream,
         BufferLength);
 
+    CXPLAT_TEL_ASSERTMSG(
+        BufferLength <= Stream->RecvPendingLength,
+        "App overflowed read buffer!");
+
     //
     // Reclaim any buffer space comsumed by the app.
     //
     if (Stream->RecvPendingLength == 0 ||
         QuicRecvBufferDrain(&Stream->RecvBuffer, BufferLength)) {
-        //
-        // No more pending data to deliver.
-        //
-        Stream->Flags.ReceiveDataPending = FALSE;
+        Stream->Flags.ReceiveDataPending = FALSE; // No more pending data to deliver.
     }
 
     if (BufferLength != 0) {
+        Stream->RecvPendingLength -= BufferLength;
+        QuicPerfCounterAdd(QUIC_PERF_COUNTER_APP_RECV_BYTES, BufferLength);
         QuicStreamOnBytesDelivered(Stream, BufferLength);
     }
 
-    if (BufferLength == Stream->RecvPendingLength) {
-        CXPLAT_DBG_ASSERT(!Stream->Flags.SentStopSending);
+    if (Stream->RecvPendingLength == 0) {
         //
-        // All data was drained from the callback, so additional callbacks can
-        // continue to be delivered.
+        // All data was drained, so additional callbacks can continue to be
+        // delivered.
         //
         Stream->Flags.ReceiveEnabled = TRUE;
+
+    } else if (!Stream->Flags.ReceiveMultiple) {
+        //
+        // The app didn't drain all the data, so we will need to wait for them
+        // to request a new receive.
+        //
+        Stream->RecvPendingLength = 0;
     }
 
     if (!Stream->Flags.ReceiveEnabled) {
@@ -1018,9 +1078,10 @@ QuicStreamReceiveComplete(
     if (Stream->Flags.ReceiveDataPending) {
         //
         // There is still more data for the app to process and it still has
-        // receive callbacks enabled, so do another recv flush.
+        // receive callbacks enabled, so do another recv flush (if not already
+        // doing multi-receive mode).
         //
-        return TRUE;
+        return !Stream->Flags.ReceiveMultiple;
     }
 
     if (Stream->RecvBuffer.BaseOffset == Stream->RecvMaxLength) {
@@ -1060,6 +1121,18 @@ QuicStreamReceiveComplete(
             &Stream->Connection->Send,
             Stream,
             QUIC_STREAM_SEND_FLAG_MAX_DATA | QUIC_STREAM_SEND_FLAG_RECV_ABORT);
+    } else if (Stream->Flags.RemoteCloseResetReliable && Stream->RecvBuffer.BaseOffset >= Stream->RecvMaxLength) {
+        //
+        // ReliableReset was initiated by the peer, and we sent enough data to the app, we can alert the app
+        // we're done and shutdown the RECV direction of this stream.
+        //
+        QuicTraceEvent(
+            StreamRecvState,
+            "[strm][%p] Recv State: %hhu",
+            Stream,
+            QuicStreamRecvGetState(Stream));
+        QuicStreamIndicatePeerSendAbortedEvent(Stream, Stream->RecvShutdownErrorCode);
+        QuicStreamRecvShutdown(Stream, TRUE, Stream->RecvShutdownErrorCode);
     }
 
     return FALSE;
@@ -1083,7 +1156,9 @@ QuicStreamRecvSetEnabledState(
         CXPLAT_DBG_ASSERT(!Stream->Flags.SentStopSending);
         Stream->Flags.ReceiveEnabled = NewRecvEnabled;
 
-        if (Stream->Flags.Started && NewRecvEnabled) {
+        if (Stream->Flags.Started && NewRecvEnabled &&
+            (Stream->RecvBuffer.RecvMode == QUIC_RECV_BUF_MODE_MULTIPLE ||
+            Stream->RecvBuffer.ReadPendingLength == 0)) {
             //
             // The application just resumed receive callbacks. Queue a
             // flush receive operation to start draining the receive buffer.

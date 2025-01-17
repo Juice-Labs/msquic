@@ -109,7 +109,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathRecvEmpty,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -128,7 +128,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathMissingInfo,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -147,7 +147,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathUroPreallocExceeded,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -166,7 +166,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathShutDownComplete,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -185,7 +185,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathSocketContextComplete,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -211,7 +211,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathUnreachableWithError,
         unsigned int, arg4_len,
         const void *, arg4), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3, arg3)
         ctf_integer(unsigned int, arg4_len, arg4_len)
         ctf_sequence(char, arg4, arg4, unsigned int, arg4_len)
@@ -237,7 +237,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathTooLarge,
         unsigned int, arg3_len,
         const void *, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3_len, arg3_len)
         ctf_sequence(char, arg3, arg3, unsigned int, arg3_len)
     )
@@ -261,7 +261,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathResolveHostNameFailed,
         const void *, arg2,
         const char *, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_string(arg3, arg3)
     )
 )
@@ -341,10 +341,10 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, LibraryError,
             "[data][%p] ERROR, %u, %s.",
             SocketProc->Parent,
             LastError,
-            "CxPlatSocketEnqueueSqe");
+            "CxPlatEventQEnqueueEx");
 // arg2 = arg2 = SocketProc->Parent = arg2
 // arg3 = arg3 = LastError = arg3
-// arg4 = arg4 = "CxPlatSocketEnqueueSqe" = arg4
+// arg4 = arg4 = "CxPlatEventQEnqueueEx" = arg4
 ----------------------------------------------------------*/
 TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathErrorStatus,
     TP_ARGS(
@@ -352,7 +352,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathErrorStatus,
         unsigned int, arg3,
         const char *, arg4), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3, arg3)
         ctf_string(arg4, arg4)
     )
@@ -381,7 +381,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathCreated,
         unsigned int, arg4_len,
         const void *, arg4), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3_len, arg3_len)
         ctf_sequence(char, arg3, arg3, unsigned int, arg3_len)
         ctf_integer(unsigned int, arg4_len, arg4_len)
@@ -404,7 +404,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathDestroyed,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -437,7 +437,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathRecv,
         unsigned int, arg6_len,
         const void *, arg6), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3, arg3)
         ctf_integer(unsigned short, arg4, arg4)
         ctf_integer(unsigned int, arg5_len, arg5_len)
@@ -479,7 +479,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_WINUSER_C, DatapathSend,
         unsigned int, arg7_len,
         const void *, arg7), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3, arg3)
         ctf_integer(unsigned char, arg4, arg4)
         ctf_integer(unsigned short, arg5, arg5)

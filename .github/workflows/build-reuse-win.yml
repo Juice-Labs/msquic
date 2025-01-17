@@ -5,6 +5,14 @@ name: Build WinUser
 on:
   workflow_call:
     inputs:
+      ref:
+        required: false
+        default: ''
+        type: string
+      repo:
+        required: false
+        default: microsoft/msquic
+        type: string
       config:
         required: false
         default: 'Release'
@@ -43,10 +51,6 @@ on:
         #   - openssl
         #   - openssl3
         #   - schannel
-      xdp:
-        required: false
-        default: ''
-        type: string
       static:
         required: false
         default: ''
@@ -55,9 +59,9 @@ on:
         required: false
         default: ''
         type: string
-      test:
+      build:
         required: false
-        default: ''
+        default: '' # Empty string means build all
         type: string
 
 permissions: read-all
@@ -66,29 +70,49 @@ jobs:
   build-windows-reuse:
     if: inputs.plat == 'windows' || inputs.plat == 'uwp'
     name: Build
-    runs-on: ${{ inputs.sanitize  == '-Sanitize' && 'windows-2019' || inputs.os }} # use windows-2019 for ASAN
+    runs-on: ${{ inputs.os }}
     steps:
     - name: Checkout repository
-      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: ${{ inputs.repo}}
+        ref: ${{ inputs.ref }}
     - name: Install Perl
-      uses: shogo82148/actions-setup-perl@35426a57f184a35daee329bb17ae49332ff8a422
+      uses: shogo82148/actions-setup-perl@98dfedee230bcf1ee68d5b021931fc8d63f2016e
       with:
         perl-version: '5.34'
     - name: Install NASM
-      uses: ilammy/setup-nasm@321e6ed62a1fc77024a3bd853deb33645e8b22c4
+      uses: ilammy/setup-nasm@13cbeb366c45c4379d3478cdcbadd8295feb5028
     - name: Prepare Machine
       shell: pwsh
       run: scripts/prepare-machine.ps1 -ForBuild -Tls ${{ inputs.tls }}
     - name: Build For Test
-      if: inputs.test == '-Test'
+      if: inputs.build == '-Test'
       shell: pwsh
-      run: scripts/build.ps1 -Config ${{ inputs.config }} -Platform ${{ inputs.plat }} -Arch ${{ inputs.arch }} -Tls ${{ inputs.tls }} -DisablePerf -DynamicCRT ${{ inputs.xdp }} ${{ inputs.sanitize }}
+      run: scripts/build.ps1 -Config ${{ inputs.config }} -Platform ${{ inputs.plat }} -Arch ${{ inputs.arch }} -Tls ${{ inputs.tls }} -DisablePerf -DynamicCRT ${{ inputs.sanitize }}
+    - name: Build External Platform Test
+      if: inputs.build == '-Test'
+      shell: pwsh
+      run: |
+        cmake --install build\${{ inputs.plat }}\${{ inputs.arch }}_${{ inputs.tls }} --config ${{ inputs.config }}
+        cmake src/platform/unittest/external -G "Visual Studio 17 2022" -A ${{ inputs.arch }} -B build_external "-DCMAKE_INSTALL_PREFIX:PATH=C:/Program Files/msquic"
+        cmake --build build_external --config ${{ inputs.config }}
+    - name: Build For Perf
+      if: inputs.build == '-Perf'
+      shell: pwsh
+      run: scripts/build.ps1 -Config ${{ inputs.config }} -Platform ${{ inputs.plat }} -Arch ${{ inputs.arch }} -Tls ${{ inputs.tls }} -DisableTools -DisableTest ${{ inputs.sanitize }}
     - name: Build
-      if: inputs.test == ''
+      if: inputs.build == ''
       shell: pwsh
-      run: scripts/build.ps1 -Config ${{ inputs.config }} -Platform ${{ inputs.plat }} -Arch ${{ inputs.arch }} -Tls ${{ inputs.tls }} ${{ inputs.xdp }} ${{ inputs.sanitize }} ${{ inputs.static }}
+      run: scripts/build.ps1 -Config ${{ inputs.config }} -Platform ${{ inputs.plat }} -Arch ${{ inputs.arch }} -Tls ${{ inputs.tls }} ${{ inputs.sanitize }} ${{ inputs.static }}
+    - name: Filter Build Artifacts
+      shell: pwsh
+      run: |
+        Remove-Item artifacts/bin/xdp -Recurse -Force -ErrorAction Ignore
+        Remove-Item artifacts/corenet-ci-main -Recurse -Force -ErrorAction Ignore
+        Remove-Item artifacts/xdp -Recurse -Force -ErrorAction Ignore
     - name: Upload build artifacts
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce
+      uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
       with:
-        name: ${{ inputs.config }}-${{ inputs.plat }}-${{ inputs.os }}-${{ inputs.arch }}-${{ inputs.tls }}${{ inputs.xdp }}${{ inputs.sanitize }}${{ inputs.static }}${{ inputs.test }}
+        name: ${{ inputs.config }}-${{ inputs.plat }}-${{ inputs.os }}-${{ inputs.arch }}-${{ inputs.tls }}${{ inputs.sanitize }}${{ inputs.static }}${{ inputs.build }}
         path: artifacts

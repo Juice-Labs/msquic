@@ -1173,30 +1173,28 @@ tracepoint(CLOG_FRAME_C, FrameLogAckFrequencyInvalid , arg2, arg3, arg4);\
 
 /*----------------------------------------------------------
 // Decoder Ring for FrameLogAckFrequency
-// [%c][%cX][%llu]   ACK_FREQUENCY SeqNum:%llu PktTolerance:%llu MaxAckDelay:%llu IgnoreOrder:%hhu IgnoreCE:%hhu
+// [%c][%cX][%llu]   ACK_FREQUENCY SeqNum:%llu AckElicitThreshold:%llu MaxAckDelay:%llu ReorderThreshold:%llu
 // QuicTraceLogVerbose(
             FrameLogAckFrequency,
-            "[%c][%cX][%llu]   ACK_FREQUENCY SeqNum:%llu PktTolerance:%llu MaxAckDelay:%llu IgnoreOrder:%hhu IgnoreCE:%hhu",
+            "[%c][%cX][%llu]   ACK_FREQUENCY SeqNum:%llu AckElicitThreshold:%llu MaxAckDelay:%llu ReorderThreshold:%llu",
             PtkConnPre(Connection),
             PktRxPre(Rx),
             PacketNumber,
             Frame.SequenceNumber,
-            Frame.PacketTolerance,
-            Frame.UpdateMaxAckDelay,
-            Frame.IgnoreOrder,
-            Frame.IgnoreCE);
+            Frame.AckElicitingThreshold,
+            Frame.RequestedMaxAckDelay,
+            Frame.ReorderingThreshold);
 // arg2 = arg2 = PtkConnPre(Connection) = arg2
 // arg3 = arg3 = PktRxPre(Rx) = arg3
 // arg4 = arg4 = PacketNumber = arg4
 // arg5 = arg5 = Frame.SequenceNumber = arg5
-// arg6 = arg6 = Frame.PacketTolerance = arg6
-// arg7 = arg7 = Frame.UpdateMaxAckDelay = arg7
-// arg8 = arg8 = Frame.IgnoreOrder = arg8
-// arg9 = arg9 = Frame.IgnoreCE = arg9
+// arg6 = arg6 = Frame.AckElicitingThreshold = arg6
+// arg7 = arg7 = Frame.RequestedMaxAckDelay = arg7
+// arg8 = arg8 = Frame.ReorderingThreshold = arg8
 ----------------------------------------------------------*/
-#ifndef _clog_10_ARGS_TRACE_FrameLogAckFrequency
-#define _clog_10_ARGS_TRACE_FrameLogAckFrequency(uniqueId, encoded_arg_string, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9)\
-tracepoint(CLOG_FRAME_C, FrameLogAckFrequency , arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);\
+#ifndef _clog_9_ARGS_TRACE_FrameLogAckFrequency
+#define _clog_9_ARGS_TRACE_FrameLogAckFrequency(uniqueId, encoded_arg_string, arg2, arg3, arg4, arg5, arg6, arg7, arg8)\
+tracepoint(CLOG_FRAME_C, FrameLogAckFrequency , arg2, arg3, arg4, arg5, arg6, arg7, arg8);\
 
 #endif
 
@@ -1219,6 +1217,104 @@ tracepoint(CLOG_FRAME_C, FrameLogAckFrequency , arg2, arg3, arg4, arg5, arg6, ar
 #ifndef _clog_5_ARGS_TRACE_FrameLogImmediateAck
 #define _clog_5_ARGS_TRACE_FrameLogImmediateAck(uniqueId, encoded_arg_string, arg2, arg3, arg4)\
 tracepoint(CLOG_FRAME_C, FrameLogImmediateAck , arg2, arg3, arg4);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for FrameLogTimestampInvalid
+// [%c][%cX][%llu]   TIMESTAMP [Invalid]
+// QuicTraceLogVerbose(
+                FrameLogTimestampInvalid,
+                "[%c][%cX][%llu]   TIMESTAMP [Invalid]",
+                PtkConnPre(Connection),
+                PktRxPre(Rx),
+                PacketNumber);
+// arg2 = arg2 = PtkConnPre(Connection) = arg2
+// arg3 = arg3 = PktRxPre(Rx) = arg3
+// arg4 = arg4 = PacketNumber = arg4
+----------------------------------------------------------*/
+#ifndef _clog_5_ARGS_TRACE_FrameLogTimestampInvalid
+#define _clog_5_ARGS_TRACE_FrameLogTimestampInvalid(uniqueId, encoded_arg_string, arg2, arg3, arg4)\
+tracepoint(CLOG_FRAME_C, FrameLogTimestampInvalid , arg2, arg3, arg4);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for FrameLogTimestamp
+// [%c][%cX][%llu]   TIMESTAMP %llu
+// QuicTraceLogVerbose(
+            FrameLogTimestamp,
+            "[%c][%cX][%llu]   TIMESTAMP %llu",
+            PtkConnPre(Connection),
+            PktRxPre(Rx),
+            PacketNumber,
+            Frame.Timestamp);
+// arg2 = arg2 = PtkConnPre(Connection) = arg2
+// arg3 = arg3 = PktRxPre(Rx) = arg3
+// arg4 = arg4 = PacketNumber = arg4
+// arg5 = arg5 = Frame.Timestamp = arg5
+----------------------------------------------------------*/
+#ifndef _clog_6_ARGS_TRACE_FrameLogTimestamp
+#define _clog_6_ARGS_TRACE_FrameLogTimestamp(uniqueId, encoded_arg_string, arg2, arg3, arg4, arg5)\
+tracepoint(CLOG_FRAME_C, FrameLogTimestamp , arg2, arg3, arg4, arg5);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for FrameLogReliableResetStreamInvalid
+// [%c][%cX][%llu]   RELIABLE_RESET_STREAM [Invalid]
+// QuicTraceLogVerbose(
+                FrameLogReliableResetStreamInvalid,
+                "[%c][%cX][%llu]   RELIABLE_RESET_STREAM [Invalid]",
+                PtkConnPre(Connection),
+                PktRxPre(Rx),
+                PacketNumber);
+// arg2 = arg2 = PtkConnPre(Connection) = arg2
+// arg3 = arg3 = PktRxPre(Rx) = arg3
+// arg4 = arg4 = PacketNumber = arg4
+----------------------------------------------------------*/
+#ifndef _clog_5_ARGS_TRACE_FrameLogReliableResetStreamInvalid
+#define _clog_5_ARGS_TRACE_FrameLogReliableResetStreamInvalid(uniqueId, encoded_arg_string, arg2, arg3, arg4)\
+tracepoint(CLOG_FRAME_C, FrameLogReliableResetStreamInvalid , arg2, arg3, arg4);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for FrameLogReliableResetStream
+// [%c][%cX][%llu]   RELIABLE_RESET_STREAM ID:%llu ErrorCode:0x%llX FinalSize:%llu ReliableSize:%llu
+// QuicTraceLogVerbose(
+            FrameLogReliableResetStream,
+            "[%c][%cX][%llu]   RELIABLE_RESET_STREAM ID:%llu ErrorCode:0x%llX FinalSize:%llu ReliableSize:%llu",
+            PtkConnPre(Connection),
+            PktRxPre(Rx),
+            PacketNumber,
+            Frame.StreamID,
+            Frame.ErrorCode,
+            Frame.FinalSize,
+            Frame.ReliableSize);
+// arg2 = arg2 = PtkConnPre(Connection) = arg2
+// arg3 = arg3 = PktRxPre(Rx) = arg3
+// arg4 = arg4 = PacketNumber = arg4
+// arg5 = arg5 = Frame.StreamID = arg5
+// arg6 = arg6 = Frame.ErrorCode = arg6
+// arg7 = arg7 = Frame.FinalSize = arg7
+// arg8 = arg8 = Frame.ReliableSize = arg8
+----------------------------------------------------------*/
+#ifndef _clog_9_ARGS_TRACE_FrameLogReliableResetStream
+#define _clog_9_ARGS_TRACE_FrameLogReliableResetStream(uniqueId, encoded_arg_string, arg2, arg3, arg4, arg5, arg6, arg7, arg8)\
+tracepoint(CLOG_FRAME_C, FrameLogReliableResetStream , arg2, arg3, arg4, arg5, arg6, arg7, arg8);\
 
 #endif
 

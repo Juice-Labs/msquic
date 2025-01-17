@@ -58,6 +58,7 @@ typedef struct _SYSTEM_BASIC_INFORMATION {
 
 uint64_t CxPlatPerfFreq;
 uint64_t CxPlatTotalMemory;
+uint32_t CxPlatProcessorCount;
 CX_PLATFORM CxPlatform = { NULL };
 QUIC_TRACE_RUNDOWN_CALLBACK* QuicTraceRundownCallback;
 
@@ -115,6 +116,20 @@ CxPlatInitialize(
     SYSTEM_BASIC_INFORMATION Sbi;
 
     PAGED_CODE();
+
+    CxPlatProcessorCount =
+        (uint32_t)KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+
+    RTL_OSVERSIONINFOW osInfo;
+    RtlZeroMemory(&osInfo, sizeof(osInfo));
+    osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+    NTSTATUS status = RtlGetVersion(&osInfo);
+    if (NT_SUCCESS(status)) {
+        DWORD BuildNumber = osInfo.dwBuildNumber;
+        CxPlatform.dwBuildNumber = BuildNumber;
+    } else {
+        CXPLAT_DBG_ASSERT(FALSE); // TODO: Is the assert here enough or is there an appropriate QUIC_STATUS we return?
+    }
 
     QUIC_STATUS Status =
         BCryptOpenAlgorithmProvider(

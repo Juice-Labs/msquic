@@ -9,18 +9,18 @@ Abstract:
     (for duplicate packet detection) and all the packet numbers that need
     to be acknowledged via an ACK_FRAME sent back to the peer. It does all
     the framing for the ACK_FRAME. It also handles the receipt of an
-    acknowledgement for a previously sent ACK_FRAME. In response to that
-    acknowledgement, the Ack Tracker removes the packet number range (less than
+    acknowledgment for a previously sent ACK_FRAME. In response to that
+    acknowledgment, the Ack Tracker removes the packet number range (less than
     the largest packet number) that was sent in the ACK_FRAME from the current
     internal tracking structures. The result is that the Ack Tracker will
     continue to send ACK_FRAMES for received packet numbers until it receives
-    an acknowledgement for the frame; then those packet numbers are no longer
+    an acknowledgment for the frame; then those packet numbers are no longer
     sent in ACK_FRAMES.
 
     The reason the Ack Tracker removes all packet numbers less than or equal to
     the largest packet number in an ACK_FRAME when that frame is acknowledged
     is because we make the assumption that by the time it gets that
-    acknowledgement, everything in that range was either completely lost or
+    acknowledgment, everything in that range was either completely lost or
     included in the ACK_FRAME and has been acknowledged.
 
     There is a possible scenario where the Ack Tracker receives packets out of
@@ -94,6 +94,73 @@ QuicAckTrackerAddPacketNumber(
     return
         QuicRangeAddRange(&Tracker->PacketNumbersReceived, PacketNumber, 1, &RangeUpdated) == NULL ||
         !RangeUpdated;
+}
+
+//
+// This function implements the logic defined in Section 6.2 [draft-ietf-quic-frequence-10]
+// to determine if the reordering threshold has been hit.
+//
+BOOLEAN
+QuicAckTrackerDidHitReorderingThreshold(
+    _In_ QUIC_ACK_TRACKER* Tracker,
+    _In_ uint8_t ReorderingThreshold
+    )
+{
+    if (ReorderingThreshold == 0 || QuicRangeSize(&Tracker->PacketNumbersToAck) < 2) {
+        return FALSE;
+    }
+
+    const uint64_t LargestUnacked = QuicRangeGetMax(&Tracker->PacketNumbersToAck);
+    const uint64_t SmallestTracked = QuicRangeGet(&Tracker->PacketNumbersToAck, 0)->Low;
+
+    //
+    // Largest Reported is equal to the largest packet number acknowledged minus the 
+    // Reordering Threshold. If the difference between the largest packet number
+    // acknowledged and the Reordering Threshold is smaller than the smallest packet 
+    // in the ack tracker, then the largest reported is the smallest packet in the ack
+    // tracker.
+    //
+
+    const uint64_t LargestReported =
+        (Tracker->LargestPacketNumberAcknowledged >= SmallestTracked + ReorderingThreshold) ?
+            Tracker->LargestPacketNumberAcknowledged - ReorderingThreshold + 1 :
+            SmallestTracked;
+
+    //
+    // Loop through all previous ACK ranges (before last) to find the smallest missing
+    // packet number that is after the largest reported packet number. If the difference
+    // between that missing number and the largest unack'ed number is more than the
+    // reordering threshold, then the condition has been met to send an immediate
+    // acknowledgement.
+    //
+
+    for (uint32_t Index = QuicRangeSize(&Tracker->PacketNumbersToAck) - 1; Index > 0; --Index) {
+        const uint64_t RangeStart = QuicRangeGet(&Tracker->PacketNumbersToAck, Index)->Low;
+
+        if (LargestReported >= RangeStart) {
+            //
+            // Since we are only looking for packets more than LargestReported, we return
+            // false here.
+            //
+            return FALSE;
+        }
+
+        // 
+        // Check if largest reported packet is missing. In that case, the smallest missing 
+        // packet becomes the largest reported packet.
+        //
+
+        uint64_t PreviousSmallestMissing = QuicRangeGetHigh(QuicRangeGet(&Tracker->PacketNumbersToAck, Index - 1)) + 1;
+        if (LargestReported > PreviousSmallestMissing) {
+            PreviousSmallestMissing = LargestReported;
+        }
+
+        if (LargestUnacked - PreviousSmallestMissing >= ReorderingThreshold) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -179,30 +246,26 @@ QuicAckTrackerAckPacket(
     //
     // There are several conditions where we decide to send an ACK immediately:
     //
-    //   1. We have received 'PacketTolerance' ACK eliciting packets.
-    //   2. We received an ACK eliciting packet that doesn't directly follow the
-    //      previously received packet number. So we assume there might have
-    //      been loss and should indicate this info to the peer. This logic is
-    //      disabled if 'IgnoreReordering' is TRUE.
-    //   3. The delayed ACK timer fires after the configured time.
-    //   4. The packet included an IMMEDIATE_ACK frame.
+    //   1. The packet included an IMMEDIATE_ACK frame.
+    //   2. ACK delay is disabled (MaxAckDelayMs == 0).
+    //   3. We have received 'PacketTolerance' ACK eliciting packets.
+    //   4. We have received an ACK eliciting packet that is out of order and the
+    //      gap between the smallest Unreported Missing packet and the Largest
+    //      Unacked is greater than or equal to the Reordering Threshold value. This logic is
+    //      disabled if the Reordering Threshold is 0.
+    //   5. The delayed ACK timer fires after the configured time.
     //
     // If we don't queue an immediate ACK and this is the first ACK eliciting
     // packet received, we make sure the ACK delay timer is started.
     //
 
     if (AckType == QUIC_ACK_TYPE_ACK_IMMEDIATE ||
+        Connection->Settings.MaxAckDelayMs == 0 ||
         (Tracker->AckElicitingPacketsToAcknowledge >= (uint16_t)Connection->PacketTolerance) ||
-        (!Connection->State.IgnoreReordering &&
-         (NewLargestPacketNumber &&
-          QuicRangeSize(&Tracker->PacketNumbersToAck) > 1 && // There are more than two ranges, i.e. a gap somewhere.
-            QuicRangeGet(
-            &Tracker->PacketNumbersToAck,
-          QuicRangeSize(&Tracker->PacketNumbersToAck) - 1)->Count == 1))) { // The gap is right before the last packet number.
+        (NewLargestPacketNumber && 
+        QuicAckTrackerDidHitReorderingThreshold(Tracker, Connection->ReorderingThreshold))) {
         //
-        // Always send an ACK immediately if we have received enough ACK
-        // eliciting packets OR the latest one indicate a gap in the packet
-        // numbers, which likely means there was loss.
+        // Send the ACK immediately.
         //
         QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_ACK);
 
@@ -229,10 +292,22 @@ QuicAckTrackerAckFrameEncode(
 {
     CXPLAT_DBG_ASSERT(QuicAckTrackerHasPacketsToAck(Tracker));
 
-    uint64_t AckDelay =
-        CxPlatTimeDiff64(Tracker->LargestPacketNumberRecvTime, CxPlatTimeUs64());
+    const uint64_t Timestamp = CxPlatTimeUs64();
+    const uint64_t AckDelay =
+        CxPlatTimeDiff64(Tracker->LargestPacketNumberRecvTime, Timestamp)
+          >> Builder->Connection->AckDelayExponent;
 
-    AckDelay >>= Builder->Connection->AckDelayExponent;
+    if (Builder->Connection->State.TimestampSendNegotiated &&
+        Builder->EncryptLevel == QUIC_ENCRYPT_LEVEL_1_RTT) {
+        QUIC_TIMESTAMP_EX Frame = { Timestamp - Builder->Connection->Stats.Timing.Start };
+        if (!QuicTimestampFrameEncode(
+                &Frame,
+                &Builder->DatagramLength,
+                (uint16_t)Builder->Datagram->Length - Builder->EncryptionOverhead,
+                Builder->Datagram->Buffer)) {
+            return FALSE;
+        }
+    }
 
     if (!QuicAckFrameEncode(
             &Tracker->PacketNumbersToAck,

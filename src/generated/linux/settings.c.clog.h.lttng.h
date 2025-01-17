@@ -370,12 +370,44 @@ TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingDumpStreamRecvWindowDefault,
 
 
 /*----------------------------------------------------------
-// Decoder Ring for SettingDumpStreamRecvBufferDefault
-// [sett] StreamRecvBufferDefault= %u
-// QuicTraceLogVerbose(SettingDumpStreamRecvBufferDefault, "[sett] StreamRecvBufferDefault= %u", Settings->StreamRecvBufferDefault);
-// arg2 = arg2 = Settings->StreamRecvBufferDefault = arg2
+// Decoder Ring for SettingDumpStreamRecvWindowBidiLocalDefault
+// [sett] StreamRecvWindowBidiLocalDefault  = %u
+// QuicTraceLogVerbose(SettingDumpStreamRecvWindowBidiLocalDefault,  "[sett] StreamRecvWindowBidiLocalDefault  = %u", Settings->StreamRecvWindowBidiLocalDefault);
+// arg2 = arg2 = Settings->StreamRecvWindowBidiLocalDefault = arg2
 ----------------------------------------------------------*/
-TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingDumpStreamRecvBufferDefault,
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingDumpStreamRecvWindowBidiLocalDefault,
+    TP_ARGS(
+        unsigned int, arg2), 
+    TP_FIELDS(
+        ctf_integer(unsigned int, arg2, arg2)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for SettingDumpStreamRecvWindowBidiRemoteDefault
+// [sett] StreamRecvWindowBidiRemoteDefault = %u
+// QuicTraceLogVerbose(SettingDumpStreamRecvWindowBidiRemoteDefault, "[sett] StreamRecvWindowBidiRemoteDefault = %u", Settings->StreamRecvWindowBidiRemoteDefault);
+// arg2 = arg2 = Settings->StreamRecvWindowBidiRemoteDefault = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingDumpStreamRecvWindowBidiRemoteDefault,
+    TP_ARGS(
+        unsigned int, arg2), 
+    TP_FIELDS(
+        ctf_integer(unsigned int, arg2, arg2)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for SettingDumpStreamRecvWindowUnidiDefault
+// [sett] StreamRecvWindowUnidiDefault      = %u
+// QuicTraceLogVerbose(SettingDumpStreamRecvWindowUnidiDefault,      "[sett] StreamRecvWindowUnidiDefault      = %u", Settings->StreamRecvWindowUnidiDefault);
+// arg2 = arg2 = Settings->StreamRecvWindowUnidiDefault = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingDumpStreamRecvWindowUnidiDefault,
     TP_ARGS(
         unsigned int, arg2), 
     TP_FIELDS(
@@ -747,6 +779,54 @@ TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingReliableResetEnabled,
 
 
 /*----------------------------------------------------------
+// Decoder Ring for SettingOneWayDelayEnabled
+// [sett] OneWayDelayEnabled     = %hhu
+// QuicTraceLogVerbose(SettingOneWayDelayEnabled,          "[sett] OneWayDelayEnabled     = %hhu", Settings->OneWayDelayEnabled);
+// arg2 = arg2 = Settings->OneWayDelayEnabled = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingOneWayDelayEnabled,
+    TP_ARGS(
+        unsigned char, arg2), 
+    TP_FIELDS(
+        ctf_integer(unsigned char, arg2, arg2)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for SettingNetStatsEventEnabled
+// [sett] NetStatsEventEnabled   = %hhu
+// QuicTraceLogVerbose(SettingNetStatsEventEnabled,        "[sett] NetStatsEventEnabled   = %hhu", Settings->NetStatsEventEnabled);
+// arg2 = arg2 = Settings->NetStatsEventEnabled = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingNetStatsEventEnabled,
+    TP_ARGS(
+        unsigned char, arg2), 
+    TP_FIELDS(
+        ctf_integer(unsigned char, arg2, arg2)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for SettingsStreamMultiReceiveEnabled
+// [sett] StreamMultiReceiveEnabled= %hhu
+// QuicTraceLogVerbose(SettingsStreamMultiReceiveEnabled,  "[sett] StreamMultiReceiveEnabled= %hhu", Settings->StreamMultiReceiveEnabled);
+// arg2 = arg2 = Settings->StreamMultiReceiveEnabled = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingsStreamMultiReceiveEnabled,
+    TP_ARGS(
+        unsigned char, arg2), 
+    TP_FIELDS(
+        ctf_integer(unsigned char, arg2, arg2)
+    )
+)
+
+
+
+/*----------------------------------------------------------
 // Decoder Ring for SettingDumpLFixedServerID
 // [sett] FixedServerID          = %u
 // QuicTraceLogVerbose(SettingDumpLFixedServerID,              "[sett] FixedServerID          = %u", Settings->FixedServerID);
@@ -757,6 +837,38 @@ TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingDumpLFixedServerID,
         unsigned int, arg2), 
     TP_FIELDS(
         ctf_integer(unsigned int, arg2, arg2)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for SettingDumpStreamRecvBufferDefault
+// [sett] StreamRecvBufferDefault= %u
+// QuicTraceLogVerbose(SettingDumpStreamRecvBufferDefault,     "[sett] StreamRecvBufferDefault= %u", Settings->StreamRecvBufferDefault);
+// arg2 = arg2 = Settings->StreamRecvBufferDefault = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingDumpStreamRecvBufferDefault,
+    TP_ARGS(
+        unsigned int, arg2), 
+    TP_FIELDS(
+        ctf_integer(unsigned int, arg2, arg2)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for SettingStreamMultiReceiveEnabled
+// [sett] StreamMultiReceiveEnabled  = %hhu
+// QuicTraceLogVerbose(SettingStreamMultiReceiveEnabled,       "[sett] StreamMultiReceiveEnabled  = %hhu", Settings->StreamMultiReceiveEnabled);
+// arg2 = arg2 = Settings->StreamMultiReceiveEnabled = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_SETTINGS_C, SettingStreamMultiReceiveEnabled,
+    TP_ARGS(
+        unsigned char, arg2), 
+    TP_FIELDS(
+        ctf_integer(unsigned char, arg2, arg2)
     )
 )
 

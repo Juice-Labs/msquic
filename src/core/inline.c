@@ -653,11 +653,6 @@ QuicRangeCompare(
     const QUIC_SUBRANGE* Sub
     );
 
-uint64_t
-QuicConnGetNextExpirationTime(
-    _In_ const QUIC_CONNECTION * const Connection
-    );
-
 BOOLEAN
 QuicPacketIsHandshake(
     _In_ const QUIC_HEADER_INVARIANT* Packet
@@ -714,7 +709,7 @@ QuicStreamRecvGetState(
 
 BOOLEAN
 QuicRetryTokenDecrypt(
-    _In_ const CXPLAT_RECV_PACKET* const Packet,
+    _In_ const QUIC_RX_PACKET* const Packet,
     _In_reads_(sizeof(QUIC_TOKEN_CONTENTS))
         const uint8_t* TokenBuffer,
     _Out_ QUIC_TOKEN_CONTENTS* Token
@@ -779,6 +774,11 @@ QuicConnTimerSet(
     _In_ uint64_t DelayUs
     );
 
+uint64_t
+QuicConnGetAckDelay(
+    _In_ const QUIC_CONNECTION* Connection
+    );
+
 uint8_t
 QuicPacketTraceType(
     _In_ const QUIC_SENT_PACKET_METADATA* Metadata
@@ -815,4 +815,10 @@ void
 QuicMtuDiscoveryCheckSearchCompleteTimeout(
     _In_ QUIC_CONNECTION* Connection,
     _In_ uint64_t TimeNow
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN
+QuicOperationHasPriority(
+    _In_ QUIC_OPERATION_QUEUE* OperQ
     );

@@ -239,6 +239,10 @@ CxPlatLogAssert(
 #define CXPLAT_IRQL() KeGetCurrentIrql()
 
 #define CXPLAT_PASSIVE_CODE() CXPLAT_DBG_ASSERT(CXPLAT_IRQL() == PASSIVE_LEVEL)
+#define CXPLAT_AT_DISPATCH() (CXPLAT_IRQL() == DISPATCH_LEVEL)
+
+#define CXPLAT_RAISE_IRQL() KIRQL OldIrql; KeRaiseIrql(DISPATCH_LEVEL, &OldIrql)
+#define CXPLAT_LOWER_IRQL() KeLowerIrql(OldIrql)
 
 //
 // Allocation/Memory Interfaces
@@ -310,17 +314,14 @@ typedef EX_PUSH_LOCK CXPLAT_RW_LOCK;
 #define CxPlatRwLockReleaseShared(Lock) ExReleasePushLockShared(Lock); KeLeaveCriticalRegion()
 #define CxPlatRwLockReleaseExclusive(Lock) ExReleasePushLockExclusive(Lock); KeLeaveCriticalRegion()
 
-typedef struct CXPLAT_DISPATCH_RW_LOCK {
-    EX_SPIN_LOCK SpinLock;
-    KIRQL PrevIrql;
-} CXPLAT_DISPATCH_RW_LOCK;
+typedef EX_SPIN_LOCK CXPLAT_DISPATCH_RW_LOCK;
 
-#define CxPlatDispatchRwLockInitialize(Lock) (Lock)->SpinLock = 0
+#define CxPlatDispatchRwLockInitialize(Lock) *(Lock) = 0
 #define CxPlatDispatchRwLockUninitialize(Lock)
-#define CxPlatDispatchRwLockAcquireShared(Lock) (Lock)->PrevIrql = ExAcquireSpinLockShared(&(Lock)->SpinLock)
-#define CxPlatDispatchRwLockAcquireExclusive(Lock) (Lock)->PrevIrql = ExAcquireSpinLockExclusive(&(Lock)->SpinLock)
-#define CxPlatDispatchRwLockReleaseShared(Lock) ExReleaseSpinLockShared(&(Lock)->SpinLock, (Lock)->PrevIrql)
-#define CxPlatDispatchRwLockReleaseExclusive(Lock) ExReleaseSpinLockExclusive(&(Lock)->SpinLock, (Lock)->PrevIrql)
+#define CxPlatDispatchRwLockAcquireShared(Lock, PrevIrql) KIRQL PrevIrql = ExAcquireSpinLockShared(Lock)
+#define CxPlatDispatchRwLockAcquireExclusive(Lock, PrevIrql) KIRQL PrevIrql = ExAcquireSpinLockExclusive(Lock)
+#define CxPlatDispatchRwLockReleaseShared(Lock, PrevIrql) ExReleaseSpinLockShared(Lock, PrevIrql)
+#define CxPlatDispatchRwLockReleaseExclusive(Lock, PrevIrql) ExReleaseSpinLockExclusive(Lock, PrevIrql)
 
 //
 // Reference Count Interface
@@ -461,7 +462,8 @@ _CxPlatEventWaitWithTimeout(
     )
 {
     LARGE_INTEGER Timeout100Ns;
-    Timeout100Ns.QuadPart = Int32x32To64(TimeoutMs, -10000);
+    CXPLAT_DBG_ASSERT(TimeoutMs != UINT32_MAX);
+    Timeout100Ns.QuadPart = -1 * UInt32x32To64(TimeoutMs, 10000);
     return KeWaitForSingleObject(Event, Executive, KernelMode, FALSE, &Timeout100Ns);
 }
 #define CxPlatEventWaitWithTimeout(Event, TimeoutMs) \
@@ -496,16 +498,14 @@ CxPlatEventQCleanup(
 inline
 BOOLEAN
 _CxPlatEventQEnqueue(
-    _In_ CXPLAT_EVENTQ* queue,
-    _In_opt_ void* user_data
+    _In_ CXPLAT_EVENTQ* queue
     )
 {
-    UNREFERENCED_PARAMETER(user_data);
     KeSetEvent(queue, IO_NO_INCREMENT, FALSE);
     return TRUE;
 }
 
-#define CxPlatEventQEnqueue(queue, sqe, user_data) _CxPlatEventQEnqueue(queue, user_data)
+#define CxPlatEventQEnqueue(queue, sqe) _CxPlatEventQEnqueue(queue)
 
 inline
 uint32_t
@@ -881,10 +881,9 @@ typedef ULONG_PTR CXPLAT_THREAD_ID;
 // Processor Count and Index
 //
 
-#define CxPlatProcMaxCount() KeQueryMaximumProcessorCountEx(ALL_PROCESSOR_GROUPS)
-#define CxPlatProcActiveCount() KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS)
-#define CxPlatProcCurrentNumber() KeGetCurrentProcessorIndex()
-#define CxPlatProcIsActive(Index) TRUE // TODO
+extern uint32_t CxPlatProcessorCount;
+#define CxPlatProcCount() CxPlatProcessorCount
+#define CxPlatProcCurrentNumber() (KeGetCurrentProcessorIndex() % CxPlatProcessorCount)
 
 //
 // Rundown Protection Interfaces
@@ -956,61 +955,6 @@ NdisSetThreadObjectCompartmentId(
     IN PETHREAD ThreadObject,
     IN NET_IF_COMPARTMENT_ID CompartmentId
     );
-
-inline
-QUIC_STATUS
-CxPlatSetCurrentThreadProcessorAffinity(
-    _In_ uint16_t ProcessorIndex
-    )
-{
-    PROCESSOR_NUMBER ProcInfo;
-    QUIC_STATUS Status =
-        KeGetProcessorNumberFromIndex(
-            ProcessorIndex,
-            &ProcInfo);
-    if (QUIC_FAILED(Status)) {
-        return Status;
-    }
-    GROUP_AFFINITY Affinity = {0};
-    Affinity.Mask = (KAFFINITY)(1ull << ProcInfo.Number);
-    Affinity.Group = ProcInfo.Group;
-    return
-        ZwSetInformationThread(
-            ZwCurrentThread(),
-            ThreadGroupInformation,
-            &Affinity,
-            sizeof(Affinity));
-}
-
-inline
-QUIC_STATUS
-CxPlatSetCurrentThreadGroupAffinity(
-    _In_ uint16_t ProcessorGroup
-    )
-{
-    GROUP_AFFINITY Affinity = {0};
-    GROUP_AFFINITY ExistingAffinity = {0};
-    QUIC_STATUS Status;
-    if (QUIC_FAILED(
-        Status =
-            ZwQueryInformationThread(
-                ZwCurrentThread(),
-                ThreadGroupInformation,
-                &ExistingAffinity,
-                sizeof(ExistingAffinity),
-                NULL))) {
-        return Status;
-    }
-
-    Affinity.Mask = ExistingAffinity.Mask;
-    Affinity.Group = ProcessorGroup;
-    return
-        ZwSetInformationThread(
-            ZwCurrentThread(),
-            ThreadGroupInformation,
-            &Affinity,
-            sizeof(Affinity));
-}
 
 #define QuicCompartmentIdGetCurrent() NdisGetThreadObjectCompartmentId(PsGetCurrentThread())
 #define QuicCompartmentIdSetCurrent(CompartmentId) \

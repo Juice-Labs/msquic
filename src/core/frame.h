@@ -69,6 +69,10 @@ extern "C" {
 //
 #define QUIC_ERROR_PROTOCOL_VIOLATION           0xA
 //
+// The application or application protocol caused the connection to be closed.
+//
+#define QUIC_ERROR_APPLICATION_ERROR            0xB
+//
 // An endpoint has received more data in CRYPTO frames than it can buffer.
 //
 #define QUIC_ERROR_CRYPTO_BUFFER_EXCEEDED       0xD
@@ -152,7 +156,9 @@ typedef enum QUIC_FRAME_TYPE {
     QUIC_FRAME_DATAGRAM_1           = 0x31ULL,
     /* 0x32 to 0xad are unused currently */
     QUIC_FRAME_ACK_FREQUENCY        = 0xafULL,
-    QUIC_FRAME_IMMEDIATE_ACK        = 0xacULL,
+    QUIC_FRAME_IMMEDIATE_ACK        = 0x1fULL,
+    /* 0xaf to 0x2f4 are unused currently */
+    QUIC_FRAME_TIMESTAMP            = 0x2f5ULL,
 
     QUIC_FRAME_MAX_SUPPORTED
 
@@ -166,7 +172,8 @@ CXPLAT_STATIC_ASSERT(
     (X <= QUIC_FRAME_HANDSHAKE_DONE || \
      (X >= QUIC_FRAME_DATAGRAM && X <= QUIC_FRAME_DATAGRAM_1) || \
       X == QUIC_FRAME_ACK_FREQUENCY || X == QUIC_FRAME_IMMEDIATE_ACK || \
-      X == QUIC_FRAME_RELIABLE_RESET_STREAM \
+      X == QUIC_FRAME_RELIABLE_RESET_STREAM || \
+      X == QUIC_FRAME_TIMESTAMP \
     )
 
 //
@@ -837,11 +844,9 @@ QuicDatagramFrameDecode(
 typedef struct QUIC_ACK_FREQUENCY_EX {
 
     QUIC_VAR_INT SequenceNumber;
-    QUIC_VAR_INT PacketTolerance;
-    QUIC_VAR_INT UpdateMaxAckDelay; // In microseconds (us)
-    BOOLEAN IgnoreOrder;
-    BOOLEAN IgnoreCE;
-
+    QUIC_VAR_INT AckElicitingThreshold;
+    QUIC_VAR_INT RequestedMaxAckDelay; // In microseconds (us)
+    QUIC_VAR_INT ReorderingThreshold;
 } QUIC_ACK_FREQUENCY_EX;
 
 _Success_(return != FALSE)
@@ -862,6 +867,36 @@ QuicAckFrequencyFrameDecode(
         const uint8_t * const Buffer,
     _Inout_ uint16_t* Offset,
     _Out_ QUIC_ACK_FREQUENCY_EX* Frame
+    );
+
+//
+// QUIC_FRAME_TIMESTAMP Encoding/Decoding
+//
+
+typedef struct QUIC_TIMESTAMP_EX {
+
+    QUIC_VAR_INT Timestamp; // In microseconds since beginning of epoch
+
+} QUIC_TIMESTAMP_EX;
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicTimestampFrameEncode(
+    _In_ const QUIC_TIMESTAMP_EX * const Frame,
+    _Inout_ uint16_t* Offset,
+    _In_ uint16_t BufferLength,
+    _Out_writes_to_(BufferLength, *Offset)
+        uint8_t* Buffer
+    );
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicTimestampFrameDecode(
+    _In_ uint16_t BufferLength,
+    _In_reads_bytes_(BufferLength)
+        const uint8_t * const Buffer,
+    _Inout_ uint16_t* Offset,
+    _Out_ QUIC_TIMESTAMP_EX* Frame
     );
 
 //

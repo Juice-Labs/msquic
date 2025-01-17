@@ -36,9 +36,8 @@ typedef union QUIC_CONNECTION_STATE {
         BOOLEAN ClosedLocally   : 1;    // Locally closed.
         BOOLEAN ClosedRemotely  : 1;    // Remotely closed.
         BOOLEAN AppClosed       : 1;    // Application (not transport) closed connection.
-        BOOLEAN HandleShutdown  : 1;    // Shutdown callback delivered for handle.
+        BOOLEAN ShutdownComplete : 1;   // Shutdown callback delivered for handle.
         BOOLEAN HandleClosed    : 1;    // Handle closed by application layer.
-        BOOLEAN Uninitialized   : 1;    // Uninitialize started/completed.
         BOOLEAN Freed           : 1;    // Freed. Used for Debugging.
 
         //
@@ -120,9 +119,9 @@ typedef union QUIC_CONNECTION_STATE {
         BOOLEAN ShutdownCompleteTimedOut : 1;
 
         //
-        // The application needs to be notified of a shutdown complete event.
+        // The connection is shutdown and the completion for it needs to be run.
         //
-        BOOLEAN SendShutdownCompleteNotif : 1;
+        BOOLEAN ProcessShutdownComplete : 1;
 
         //
         // Indicates whether this connection shares bindings with others.
@@ -146,12 +145,6 @@ typedef union QUIC_CONNECTION_STATE {
         // resumption tickets.
         //
         BOOLEAN ResumptionEnabled : 1;
-
-        //
-        // When true, this indicates that reordering shouldn't elict an
-        // immediate acknowledgement.
-        //
-        BOOLEAN IgnoreReordering : 1;
 
         //
         // When true, this indicates that the connection is currently executing
@@ -185,6 +178,22 @@ typedef union QUIC_CONNECTION_STATE {
         //
         BOOLEAN ReliableResetStreamNegotiated : 1;
 
+        //
+        // Sending timestamps has been negotiated.
+        //
+        BOOLEAN TimestampSendNegotiated : 1;
+
+        //
+        // Receiving timestamps has been negotiated.
+        //
+        BOOLEAN TimestampRecvNegotiated : 1;
+
+        //
+        // Indicates we received APPLICATION_ERROR transport error and are checking also
+        // later packets in case they contain CONNECTION_CLOSE frame with application-layer error.
+        //
+        BOOLEAN DelayedApplicationError : 1;
+
 #ifdef CxPlatVerifierEnabledByAddr
         //
         // The calling app is being verified (app or driver verifier).
@@ -213,28 +222,13 @@ typedef enum QUIC_CONNECTION_REF {
     QUIC_CONN_REF_LOOKUP_TABLE,         // Per registered CID.
     QUIC_CONN_REF_LOOKUP_RESULT,        // For connections returned from lookups.
     QUIC_CONN_REF_WORKER,               // Worker is (queued for) processing.
+    QUIC_CONN_REF_TIMER_WHEEL,          // The timer wheel is tracking the connection.
     QUIC_CONN_REF_ROUTE,                // Route resolution is undergoing.
+    QUIC_CONN_REF_STREAM,               // A stream depends on the connection.
 
     QUIC_CONN_REF_COUNT
 
 } QUIC_CONNECTION_REF;
-
-//
-// A single timer entry on the connection.
-//
-typedef struct QUIC_CONN_TIMER_ENTRY {
-
-    //
-    // The type of timer this entry is for.
-    //
-    QUIC_CONN_TIMER_TYPE Type;
-
-    //
-    // The absolute time (in us) for timer expiration.
-    //
-    uint64_t ExpirationTime;
-
-} QUIC_CONN_TIMER_ENTRY;
 
 //
 // Per connection statistics.
@@ -262,6 +256,7 @@ typedef struct QUIC_CONN_STATS {
         uint64_t Start;
         uint64_t InitialFlightEnd;      // Processed all peer's Initial packets
         uint64_t HandshakeFlightEnd;    // Processed all peer's Handshake packets
+        int64_t PhaseShift;             // Time between local and peer epochs
     } Timing;
 
     struct {
@@ -274,6 +269,7 @@ typedef struct QUIC_CONN_STATS {
         uint32_t ClientFlight1Bytes;    // Sum of TLS payloads
         uint32_t ServerFlight1Bytes;    // Sum of TLS payloads
         uint32_t ClientFlight2Bytes;    // Sum of TLS payloads
+        uint8_t HandshakeHopLimitTTL;   // TTL value in the initial packet of the handshake.
     } Handshake;
 
     struct {
@@ -398,6 +394,11 @@ typedef struct QUIC_CONNECTION {
     uint8_t DestCidCount;
 
     //
+    // Number of retired desintation CIDs we currently have cached.
+    //
+    uint8_t RetiredDestCidCount;
+
+    //
     // The maximum number of source CIDs to give the peer. This is a minimum of
     // what we're willing to support and what the peer is willing to accept.
     //
@@ -420,6 +421,7 @@ typedef struct QUIC_CONNECTION {
     //
     BOOLEAN WorkerProcessing : 1;
     BOOLEAN HasQueuedWork : 1;
+    BOOLEAN HasPriorityWork : 1;
 
     //
     // Set of current reasons sending more packets is currently blocked.
@@ -434,16 +436,31 @@ typedef struct QUIC_CONNECTION {
 
     //
     // The number of packets that must be received before eliciting an immediate
-    // acknowledgement. May be updated by the peer via the ACK_FREQUENCY frame.
+    // acknowledgment. May be updated by the peer via the ACK_FREQUENCY frame.
     //
     uint8_t PacketTolerance;
 
     //
     // The number of packets we want the peer to wait before sending an
-    // immediate acknowledgement. Requires the ACK_FREQUENCY extension/frame to
+    // immediate acknowledgment. Requires the ACK_FREQUENCY extension/frame to
     // be able to send to the peer.
     //
     uint8_t PeerPacketTolerance;
+
+    //
+    // The maximum number of packets that can be out of order before an immediate
+    // acknowledgment (ACK) is triggered. If no specific instructions (ACK_FREQUENCY
+    // frames) are received from the peer, the receiver will immediately acknowledge
+    // any out-of-order packets, which means the default value is 1. A value of 0
+    // means out-of-order packets do not trigger an immediate ACK.
+    //
+    uint8_t ReorderingThreshold;
+
+    //
+    // The maximum number of packets that the peer can be out of order before an immediate
+    // acknowledgment (ACK) is triggered.
+    //
+    uint8_t PeerReorderingThreshold;
 
     //
     // The ACK frequency sequence number we are currently using to send.
@@ -496,17 +513,23 @@ typedef struct QUIC_CONNECTION {
     uint8_t CibirId[2 + QUIC_MAX_CIBIR_LENGTH];
 
     //
-    // Sorted array of all timers for the connection.
+    // Expiration time (absolute time in us) for each timer type. We use UINT64_MAX as a sentinel
+    // to indicate that the timer is not set.
     //
-    QUIC_CONN_TIMER_ENTRY Timers[QUIC_CONN_TIMER_COUNT];
+    uint64_t ExpirationTimes[QUIC_CONN_TIMER_COUNT];
+
+    //
+    // Earliest expiration time of all timers types.
+    //
+    uint64_t EarliestExpirationTime;
 
     //
     // Receive packet queue.
     //
     uint32_t ReceiveQueueCount;
     uint32_t ReceiveQueueByteCount;
-    CXPLAT_RECV_DATA* ReceiveQueue;
-    CXPLAT_RECV_DATA** ReceiveQueueTail;
+    QUIC_RX_PACKET* ReceiveQueue;
+    QUIC_RX_PACKET** ReceiveQueueTail;
     CXPLAT_DISPATCH_LOCK ReceiveQueueLock;
 
     //
@@ -669,7 +692,9 @@ typedef struct QUIC_SERIALIZED_RESUMPTION_STATE {
     1024 /* Extra QUIC stuff */ \
 )
 
-#ifdef CxPlatVerifierEnabledByAddr
+#if DEBUG // Enable all verifier checks in debug builds
+#define QUIC_CONN_VERIFY(Connection, Expr) CXPLAT_FRE_ASSERT(Expr)
+#elif defined(CxPlatVerifierEnabledByAddr)
 #define QUIC_CONN_VERIFY(Connection, Expr) \
     if (Connection->State.IsVerifying) { CXPLAT_FRE_ASSERT(Expr); }
 #elif defined(CxPlatVerifierEnabled)
@@ -713,18 +738,6 @@ QuicConnIsClosed(
     )
 {
     return Connection->State.ClosedLocally || Connection->State.ClosedRemotely;
-}
-
-//
-// Returns the earliest expiration time across all timers for the connection.
-//
-inline
-uint64_t
-QuicConnGetNextExpirationTime(
-    _In_ const QUIC_CONNECTION * const Connection
-    )
-{
-    return Connection->Timers[0].ExpirationTime;
 }
 
 //
@@ -855,8 +868,8 @@ QuicConnLogStatistics(
     UNREFERENCED_PARAMETER(Path);
 
     QuicTraceEvent(
-        ConnStatsV2,
-        "[conn][%p] STATS: SRtt=%u CongestionCount=%u PersistentCongestionCount=%u SendTotalBytes=%llu RecvTotalBytes=%llu CongestionWindow=%u Cc=%s EcnCongestionCount=%u",
+        ConnStatsV3,
+        "[conn][%p] STATS: SRtt=%llu CongestionCount=%u PersistentCongestionCount=%u SendTotalBytes=%llu RecvTotalBytes=%llu CongestionWindow=%u Cc=%s EcnCongestionCount=%u",
         Connection,
         Path->SmoothedRtt,
         Connection->Stats.Send.CongestionCount,
@@ -983,7 +996,7 @@ QUIC_STATUS
 QuicConnAlloc(
     _In_ QUIC_REGISTRATION* Registration,
     _In_opt_ QUIC_WORKER* Worker,
-    _In_opt_ const CXPLAT_RECV_DATA* const Datagram,
+    _In_opt_ const QUIC_RX_PACKET* Packet,
     _Outptr_ _At_(*NewConnection, __drv_allocatesMem(Mem))
         QUIC_CONNECTION** NewConnection
     );
@@ -1106,6 +1119,15 @@ QuicConnRegister(
     );
 
 //
+// Unregisters the connection from the registration.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicConnUnregister(
+    _Inout_ QUIC_CONNECTION* Connection
+    );
+
+//
 // Tracing rundown for the connection.
 //
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -1132,7 +1154,8 @@ QuicConnIndicateEvent(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 BOOLEAN
 QuicConnDrainOperations(
-    _In_ QUIC_CONNECTION* Connection
+    _In_ QUIC_CONNECTION* Connection,
+    _Inout_ BOOLEAN* StillHasPriorityWork
     );
 
 //
@@ -1142,6 +1165,13 @@ QuicConnDrainOperations(
 _IRQL_requires_max_(DISPATCH_LEVEL)
 void
 QuicConnQueueOper(
+    _In_ QUIC_CONNECTION* Connection,
+    _In_ QUIC_OPERATION* Oper
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicConnQueuePriorityOper(
     _In_ QUIC_CONNECTION* Connection,
     _In_ QUIC_OPERATION* Oper
     );
@@ -1292,7 +1322,9 @@ void
 QuicConnUpdateRtt(
     _In_ QUIC_CONNECTION* Connection,
     _In_ QUIC_PATH* Path,
-    _In_ uint32_t LatestRtt
+    _In_ uint64_t LatestRtt,
+    _In_ uint64_t OurSendTimestamp,
+    _In_ uint64_t PeerSendTimestamp
     );
 
 //
@@ -1339,6 +1371,26 @@ QuicConnTimerExpired(
     _Inout_ QUIC_CONNECTION* Connection,
     _In_ uint64_t TimeNow
     );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+inline
+uint64_t
+QuicConnGetAckDelay(
+    _In_ const QUIC_CONNECTION* Connection
+    )
+{
+    if (Connection->Settings.MaxAckDelayMs &&
+        (MsQuicLib.ExecutionConfig == NULL ||
+         Connection->Settings.MaxAckDelayMs > US_TO_MS(MsQuicLib.ExecutionConfig->PollingIdleTimeoutUs))) {
+        //
+        // If we are using delayed ACKs, and the ACK delay is greater than the
+        // polling timeout, then we need to account for delay resulting from
+        // from the timer resolution.
+        //
+        return (uint64_t)Connection->Settings.MaxAckDelayMs + (uint64_t)MsQuicLib.TimerResolutionMs;
+    }
+    return (uint64_t)Connection->Settings.MaxAckDelayMs;
+}
 
 //
 // Called when the QUIC version is set.
@@ -1500,15 +1552,15 @@ QuicConnResetIdleTimeout(
     );
 
 //
-// Queues a received UDP datagram chain to a connection for processing.
+// Queues a received packet chain to a connection for processing.
 //
 _IRQL_requires_max_(DISPATCH_LEVEL)
 void
-QuicConnQueueRecvDatagrams(
+QuicConnQueueRecvPackets(
     _In_ QUIC_CONNECTION* Connection,
-    _In_ CXPLAT_RECV_DATA* DatagramChain,
-    _In_ uint32_t DatagramChainLength,
-    _In_ uint32_t DatagramChainByteLength
+    _In_ QUIC_RX_PACKET* Packets,
+    _In_ uint32_t PacketChainLength,
+    _In_ uint32_t PacketChainByteLength
     );
 
 //

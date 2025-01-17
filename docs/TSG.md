@@ -5,8 +5,8 @@ This document is meant to be a step-by-step guide for trouble shooting any issue
 ## What kind of Issue are you having?
 
 1. [I am debugging a crash.](#debugging-a-crash)
-2. [Something is not functionally working as I expect.](#trouble-shooting-a-functional-issue)
-3. [Performance is not what I expect it to be.](#trouble-shooting-a-performance-issue)
+1. [Something is not functionally working as I expect.](#trouble-shooting-a-functional-issue)
+1. [Performance is not what I expect it to be.](#trouble-shooting-a-performance-issue)
 
 # Debugging a Crash
 
@@ -14,15 +14,41 @@ This document is meant to be a step-by-step guide for trouble shooting any issue
 
 # Trouble Shooting a Functional Issue
 
+1. [MsQuic logging?](#logging)
 1. [I am getting an error code I don't understand.](#understanding-error-codes)
-2. [The connection is unexpectedly shutting down.](#why-is-the-connection-shutting-down)
-3. [No application (stream) data seems to be flowing.](#why-isnt-application-data-flowing)
-4. [Why is this API failing?](#why-is-this-api-failing)
-5. [An MsQuic API is hanging.](#why-is-the-api-hanging-or-deadlocking)
-6. [I am having problems with SMB over QUIC.](#trouble-shooting-smb-over-quic-issues)
-7. [No credentials when loading a server certificate from PEM with Schannel.](#convert-pem-to-pkcs12-for-schannel)
-8. [TLS handshake fails in Chrome and Edge for HTTP/3 (including WebTransport) even though HTTP/1.1 and HTTP/2 work.](#using-a-self-signed-certificate-for-http3)
-9. [I need to get a packet capture](#collecting-a-packet-capture).
+1. [The connection is unexpectedly shutting down.](#why-is-the-connection-shutting-down)
+1. [The stream is aborted](#the-stream-is-aborted)
+1. [No application (stream) data seems to be flowing.](#why-isnt-application-data-flowing)
+1. [Why is this API failing?](#why-is-this-api-failing)
+1. [An MsQuic API is hanging.](#why-is-the-api-hanging-or-deadlocking)
+1. [I am having problems with SMB over QUIC.](#trouble-shooting-smb-over-quic-issues)
+1. [No credentials when loading a server certificate from PEM with Schannel.](#convert-pem-to-pkcs12-for-schannel)
+1. [TLS handshake fails in Chrome and Edge for HTTP/3 (including WebTransport) even though HTTP/1.1 and HTTP/2 work.](#using-a-self-signed-certificate-for-http3)
+1. [I need to get a packet capture](#collecting-a-packet-capture).
+
+## Logging
+
+See [Tracing](./Diagnostics.md#Built-in-Tracing)
+
+### Linux XDP logging?
+For XDP layer, enable `DEBUG` flag in `src/platform/CMakeLists.txt`.  
+You can see incomming packets information by `sudo cat /sys/kernel/debug/tracing/trace_pipe`.  
+**Your workload must become too slow.**
+```
+msquictest-3797496 [005] ..s1. 2079546.776875: bpf_trace_printk: ========> To ifacename : [duo2], RxQueueID:0
+msquictest-3797496 [005] ..s1. 2079546.776875: bpf_trace_printk:  Eth[244]        SRC: 00:00:00:00:00:00 => DST:22:22:22:22:00:02
+msquictest-3797496 [005] ..s1. 2079546.776876: bpf_trace_printk:          Ipv4 TotalLen:[230]     Src: 192.168.1.11 => Dst: 192.168.1.12
+msquictest-3797496 [005] ..s1. 2079546.776877: bpf_trace_printk:                  UDP[202]: SRC: 43829 DST:58141
+msquictest-3797496 [005] ..s1. 2079546.776877: bpf_trace_printk:                           [ec 00 00 00 01 00 09 c0 30 3d 49 a2]
+msquictest-3797496 [005] ..s1. 2079546.776878: bpf_trace_printk:                  Redirect to QUIC service.  IpMatch:1, PortMatch:1, SocketExists:1, Redirection:4
+
+msquictest-3797496 [005] ..s1. 2079546.777235: bpf_trace_printk: ========> To ifacename : [duo1], RxQueueID:0
+msquictest-3797496 [005] ..s1. 2079546.777310: bpf_trace_printk:  Eth[1262]       SRC: 00:00:00:00:00:00 => DST:22:22:22:22:00:01
+msquictest-3797496 [005] ..s1. 2079546.777323: bpf_trace_printk:          Ipv4 TotalLen:[1248]    Src: 192.168.1.12 => Dst: 192.168.1.11
+msquictest-3797496 [005] ..s1. 2079546.777323: bpf_trace_printk:                  UDP[1220]: SRC: 58141 DST:43829
+msquictest-3797496 [005] ..s1. 2079546.777324: bpf_trace_printk:                           [c0 00 00 00 01 09 c0 30 3d 49 a2 56]
+msquictest-3797496 [005] ..s1. 2079546.777325: bpf_trace_printk:                  Redirect to QUIC service.  IpMatch:1, PortMatch:1, SocketExists:1, Redirection:4
+```
 
 ## Understanding Error Codes
 
@@ -75,6 +101,21 @@ As indicated in [Understanding shutdown by Transport](#understanding-shutdown-by
 > TODO - Add an example event
 
 The error code indicated in this event is completely application defined (type of `QUIC_UINT62`). The transport has no understanding of the meaning of this value. It never generates these error codes itself. So, to map these values to some meaning will require the application protocol documentation.
+
+## The stream is aborted.
+
+Stream abortion is stream terminated abruptly. 
+
+### Remote Stream is aborted by my side?
+
+symptom: Peer complains starting stream is failed due to remote abortion.
+
+The remote stream maybe aborted locally by
+
+- Local calls the [StreamShutdown](./api/StreamShutdown.md) with **abortive** flags
+- Local calls the [StreamClose](./api/StreamClose.md)
+- Local calls the [ConnectionShutdown](./api/ConnectionShutdown.md)
+- Connection callback handler returns the value other than `QUIC_STATUS_SUCCESS` for event: `QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED` 
 
 ## Why isn't application data flowing?
 
@@ -229,7 +270,15 @@ See [FlyByWireless.CustomCertificate.Generate()](https://github.com/wegylexy/web
 
 ### Linux Packet Capture
 
-> TODO
+``` sh
+# Capture from any interface, all the udp traffic on the host and write it to the msquic.pcap file 
+tcpdump -i any udp -w msquic.pcap
+```
+
+```sh 
+# wireshark to view it. (You need load SSLKEYLOGFILE for the session key to decrypt the session)
+wireshark ./msquic.pcap
+```
 
 ### Window Packet Capture
 

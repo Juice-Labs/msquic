@@ -11,6 +11,9 @@
 #define QUIC_DEFAULT_CLIENT_CRED_FLAGS \
     (QUIC_CREDENTIAL_FLAG_CLIENT | QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION)
 
+#pragma warning(disable:4746)  // volatile access of '<expression>' is subject to /volatile:<iso|ms> setting;
+                               // consider using __iso_volatile_load/store intrinsic functions
+
 #ifndef _KERNEL_MODE
 #include <vector>
 #endif
@@ -21,6 +24,7 @@
 #include "msquicp.h"
 #include "quic_versions.h"
 #include "quic_trace.h"
+#include "msquichelper.h"
 #include "quic_var_int.h"
 #include "../core/quicdef.h"
 
@@ -42,3 +46,7 @@
 #include "TestConnection.h"
 #include "TestListener.h"
 #include "DrillDescriptor.h"
+
+#if defined(_ARM64_) || defined(_ARM64EC_)
+#pragma optimize("", off)
+#endif

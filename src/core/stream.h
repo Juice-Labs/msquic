@@ -122,6 +122,9 @@ typedef union QUIC_STREAM_FLAGS {
         BOOLEAN LocalNotAllowed         : 1;    // Peer's unidirectional stream.
         BOOLEAN LocalCloseFin           : 1;    // Locally closed (graceful).
         BOOLEAN LocalCloseReset         : 1;    // Locally closed (locally aborted).
+        BOOLEAN LocalCloseResetReliable : 1;    // Indicates that we should shutdown the send path once we sent/ACK'd ReliableOffsetSend bytes.
+        BOOLEAN LocalCloseResetReliableAcked : 1; // Indicates the peer has acknowledged we will stop sending once we sent/ACK'd ReliableOffsetSend bytes.
+        BOOLEAN RemoteCloseResetReliable : 1;   // Indicates that the peer initiated a reliable reset. Keep Recv path available for RecvMaxLength bytes.
         BOOLEAN ReceivedStopSending     : 1;    // Peer sent STOP_SENDING frame.
         BOOLEAN LocalCloseAcked         : 1;    // Any close acknowledged.
         BOOLEAN FinAcked                : 1;    // Our FIN was acknowledged.
@@ -136,11 +139,13 @@ typedef union QUIC_STREAM_FLAGS {
 
         BOOLEAN SendEnabled             : 1;    // Application is allowed to send data.
         BOOLEAN ReceiveEnabled          : 1;    // Application is ready for receive callbacks.
+        BOOLEAN ReceiveMultiple         : 1;    // The app supports multiple parallel receive indications.
         BOOLEAN ReceiveFlushQueued      : 1;    // The receive flush operation is queued.
         BOOLEAN ReceiveDataPending      : 1;    // Data (or FIN) is queued and ready for delivery.
-        BOOLEAN ReceiveCallPending      : 1;    // There is an uncompleted receive to the app.
         BOOLEAN ReceiveCallActive       : 1;    // There is an active receive to the app.
         BOOLEAN SendDelayed             : 1;    // A delayed send is currently queued.
+        BOOLEAN CancelOnLoss            : 1;    // Indicates that the stream is to be canceled
+                                                // if loss is detected.
 
         BOOLEAN HandleSendShutdown      : 1;    // Send shutdown complete callback delivered.
         BOOLEAN HandleShutdown          : 1;    // Shutdown callback delivered.
@@ -165,7 +170,9 @@ typedef enum QUIC_STREAM_SEND_STATE {
     QUIC_STREAM_SEND_RESET,
     QUIC_STREAM_SEND_RESET_ACKED,
     QUIC_STREAM_SEND_FIN,
-    QUIC_STREAM_SEND_FIN_ACKED
+    QUIC_STREAM_SEND_FIN_ACKED,
+    QUIC_STREAM_SEND_RELIABLE_RESET,
+    QUIC_STREAM_SEND_RELIABLE_RESET_ACKED
 } QUIC_STREAM_SEND_STATE;
 
 typedef enum QUIC_STREAM_RECV_STATE {
@@ -174,7 +181,8 @@ typedef enum QUIC_STREAM_RECV_STATE {
     QUIC_STREAM_RECV_PAUSED,
     QUIC_STREAM_RECV_STOPPED,
     QUIC_STREAM_RECV_RESET,
-    QUIC_STREAM_RECV_FIN
+    QUIC_STREAM_RECV_FIN,
+    QUIC_STREAM_RECV_RELIABLE_RESET
 } QUIC_STREAM_RECV_STATE;
 
 //
@@ -345,6 +353,12 @@ typedef struct QUIC_STREAM {
     //
     uint64_t RecoveryNextOffset;
     uint64_t RecoveryEndOffset;
+
+    //
+    // If > 0, bytes up to offset must be re-transmitted and ACK'd from peer before we can abort this stream.
+    //
+    uint64_t ReliableOffsetSend;
+
     #define RECOV_WINDOW_OPEN(S) ((S)->RecoveryNextOffset < (S)->RecoveryEndOffset)
 
     //
@@ -376,12 +390,7 @@ typedef struct QUIC_STREAM {
     uint64_t MaxAllowedRecvOffset;
 
     uint64_t RecvWindowBytesDelivered;
-    uint32_t RecvWindowLastUpdate;
-
-    //
-    // Flags indicating the state of queued events.
-    //
-    uint8_t EventFlags;
+    uint64_t RecvWindowLastUpdate;
 
     //
     // The structure for tracking received buffers.
@@ -394,21 +403,20 @@ typedef struct QUIC_STREAM {
     uint64_t RecvMax0RttLength;
 
     //
-    // Maximum allowed inbound byte offset, established when the FIN
-    // is received.
+    // Maximum allowed inbound byte offset, established when the FIN is received.
     //
     uint64_t RecvMaxLength;
 
     //
-    // The length of the pending receive call to the app.
+    // The number of bytes that are currently outstanding up to the app.
     //
     uint64_t RecvPendingLength;
 
     //
-    // The length of any inline receive complete call by the app. UINT64_MAX
-    // indicates that no inline call was made.
+    // The number of received bytes the app has completed but not yet processed
+    // by MsQuic.
     //
-    uint64_t RecvInlineCompletionLength;
+    volatile uint64_t RecvCompletionLength;
 
     //
     // The error code for why the receive path was shutdown.
@@ -424,6 +432,8 @@ typedef struct QUIC_STREAM {
     // Preallocated operation for receive complete
     //
     QUIC_OPERATION* ReceiveCompleteOperation;
+    QUIC_OPERATION ReceiveCompleteOperationStorage;
+    QUIC_API_CONTEXT ReceiveCompleteApiCtxStorage;
 
     //
     // Stream blocked timings.
@@ -448,6 +458,12 @@ QuicStreamSendGetState(
 {
     if (Stream->Flags.LocalNotAllowed) {
         return QUIC_STREAM_SEND_DISABLED;
+    } else if (Stream->Flags.LocalCloseResetReliable) {
+        if (Stream->Flags.LocalCloseResetReliableAcked) {
+            return QUIC_STREAM_SEND_RELIABLE_RESET_ACKED;
+        } else {
+            return QUIC_STREAM_SEND_RELIABLE_RESET;
+        }
     } else if (Stream->Flags.LocalCloseAcked) {
         if (Stream->Flags.FinAcked) {
             return QUIC_STREAM_SEND_FIN_ACKED;
@@ -473,6 +489,8 @@ QuicStreamRecvGetState(
         return QUIC_STREAM_RECV_DISABLED;
     } else if (Stream->Flags.RemoteCloseReset) {
         return QUIC_STREAM_RECV_RESET;
+    } else if (Stream->Flags.RemoteCloseResetReliable) {
+        return QUIC_STREAM_RECV_RELIABLE_RESET;
     } else if (Stream->Flags.RemoteCloseFin) {
         return QUIC_STREAM_RECV_FIN;
     } else if (Stream->Flags.SentStopSending) {
@@ -903,6 +921,24 @@ QuicStreamOnResetAck(
     );
 
 //
+// Called when an ACK is received for a RELIABLE_RESET frame we sent.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicStreamOnResetReliableAck(
+    _In_ QUIC_STREAM* Stream
+    );
+
+//
+// Cancels any queued send requests. Usually right before we abort.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicStreamCancelRequests(
+    _In_ QUIC_STREAM* Stream
+    );
+
+//
 // Dumps send state to the logs.
 //
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -932,18 +968,7 @@ QuicStreamRecvShutdown(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 QuicStreamReceiveCompletePending(
-    _In_ QUIC_STREAM* Stream,
-    _In_ uint64_t BufferLength
-    );
-
-//
-// Completes a receive call inline from a callback.
-//
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-QuicStreamReceiveCompleteInline(
-    _In_ QUIC_STREAM* Stream,
-    _In_ uint64_t BufferLength
+    _In_ QUIC_STREAM* Stream
     );
 
 //
@@ -953,7 +978,7 @@ _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QuicStreamRecv(
     _In_ QUIC_STREAM* Stream,
-    _In_ CXPLAT_RECV_PACKET* Packet,
+    _In_ QUIC_RX_PACKET* Packet,
     _In_ QUIC_FRAME_TYPE FrameType,
     _In_ uint16_t BufferLength,
     _In_reads_bytes_(BufferLength)

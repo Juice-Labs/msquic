@@ -220,6 +220,7 @@ GetModuleHandleW(
 #define CXPLAT_IRQL() PASSIVE_LEVEL
 
 #define CXPLAT_PASSIVE_CODE() CXPLAT_DBG_ASSERT(CXPLAT_IRQL() == PASSIVE_LEVEL)
+#define CXPLAT_AT_DISPATCH() FALSE
 
 //
 // Wrapper functions
@@ -318,7 +319,7 @@ typedef struct CXPLAT_POOL {
 #define CXPLAT_POOL_MAXIMUM_DEPTH       0x4000  // 16384
 #define CXPLAT_POOL_DEFAULT_MAX_DEPTH   256     // Copied from EX_MAXIMUM_LOOKASIDE_DEPTH_BASE
 #else
-#define CXPLAT_POOL_MAXIMUM_DEPTH       0
+#define CXPLAT_POOL_MAXIMUM_DEPTH       0       // TODO - Optimize this scenario better
 #define CXPLAT_POOL_DEFAULT_MAX_DEPTH   0
 #endif
 
@@ -464,6 +465,20 @@ CxPlatPoolFree(
     }
 }
 
+inline
+BOOLEAN
+CxPlatPoolPrune(
+    _Inout_ CXPLAT_POOL* Pool
+    )
+{
+    void* Entry = InterlockedPopEntrySList(&Pool->ListHead);
+    if (Entry == NULL) {
+        return FALSE;
+    }
+    Pool->Free(Entry, Pool->Tag, Pool);
+    return TRUE;
+}
+
 #define CxPlatZeroMemory RtlZeroMemory
 #define CxPlatCopyMemory RtlCopyMemory
 #define CxPlatMoveMemory RtlMoveMemory
@@ -504,10 +519,10 @@ typedef SRWLOCK CXPLAT_DISPATCH_RW_LOCK;
 
 #define CxPlatDispatchRwLockInitialize(Lock) InitializeSRWLock(Lock)
 #define CxPlatDispatchRwLockUninitialize(Lock)
-#define CxPlatDispatchRwLockAcquireShared(Lock) AcquireSRWLockShared(Lock)
-#define CxPlatDispatchRwLockAcquireExclusive(Lock) AcquireSRWLockExclusive(Lock)
-#define CxPlatDispatchRwLockReleaseShared(Lock) ReleaseSRWLockShared(Lock)
-#define CxPlatDispatchRwLockReleaseExclusive(Lock) ReleaseSRWLockExclusive(Lock)
+#define CxPlatDispatchRwLockAcquireShared(Lock, PrevIrql) AcquireSRWLockShared(Lock)
+#define CxPlatDispatchRwLockAcquireExclusive(Lock, PrevIrql) AcquireSRWLockExclusive(Lock)
+#define CxPlatDispatchRwLockReleaseShared(Lock, PrevIrql) ReleaseSRWLockShared(Lock)
+#define CxPlatDispatchRwLockReleaseExclusive(Lock, PrevIrql) ReleaseSRWLockExclusive(Lock)
 
 //
 // Reference Count Interface
@@ -670,8 +685,16 @@ typedef HANDLE CXPLAT_EVENT;
 #define CxPlatEventSet(Event) SetEvent(Event)
 #define CxPlatEventReset(Event) ResetEvent(Event)
 #define CxPlatEventWaitForever(Event) WaitForSingleObject(Event, INFINITE)
-#define CxPlatEventWaitWithTimeout(Event, timeoutMs) \
-    (WAIT_OBJECT_0 == WaitForSingleObject(Event, timeoutMs))
+inline
+BOOLEAN
+CxPlatEventWaitWithTimeout(
+    _In_ CXPLAT_EVENT Event,
+    _In_ uint32_t TimeoutMs
+    )
+{
+    CXPLAT_DBG_ASSERT(TimeoutMs != UINT32_MAX);
+    return WAIT_OBJECT_0 == WaitForSingleObject(Event, TimeoutMs);
+}
 
 //
 // Event Queue Interfaces
@@ -679,11 +702,16 @@ typedef HANDLE CXPLAT_EVENT;
 
 typedef HANDLE CXPLAT_EVENTQ;
 typedef OVERLAPPED_ENTRY CXPLAT_CQE;
-#define CXPLAT_SQE CXPLAT_SQE
-#define CXPLAT_SQE_DEFAULT {0}
+typedef
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+(CXPLAT_EVENT_COMPLETION)(
+    _In_ CXPLAT_CQE* Cqe
+    );
+typedef CXPLAT_EVENT_COMPLETION *CXPLAT_EVENT_COMPLETION_HANDLER;
 typedef struct CXPLAT_SQE {
-    void* UserData;
     OVERLAPPED Overlapped;
+    CXPLAT_EVENT_COMPLETION_HANDLER Completion;
 #if DEBUG
     BOOLEAN IsQueued; // Debug flag to catch double queueing.
 #endif
@@ -721,8 +749,7 @@ inline
 BOOLEAN
 CxPlatEventQEnqueue(
     _In_ CXPLAT_EVENTQ* queue,
-    _In_ CXPLAT_SQE* sqe,
-    _In_opt_ void* user_data
+    _In_ CXPLAT_SQE* sqe
     )
 {
 #if DEBUG
@@ -730,7 +757,6 @@ CxPlatEventQEnqueue(
     sqe->IsQueued;
 #endif
     CxPlatZeroMemory(&sqe->Overlapped, sizeof(sqe->Overlapped));
-    sqe->UserData = user_data;
     return PostQueuedCompletionStatus(*queue, 0, 0, &sqe->Overlapped) != 0;
 }
 
@@ -739,8 +765,7 @@ BOOLEAN
 CxPlatEventQEnqueueEx( // Windows specific extension
     _In_ CXPLAT_EVENTQ* queue,
     _In_ CXPLAT_SQE* sqe,
-    _In_ uint32_t num_bytes,
-    _In_opt_ void* user_data
+    _In_ uint32_t num_bytes
     )
 {
 #if DEBUG
@@ -748,7 +773,6 @@ CxPlatEventQEnqueueEx( // Windows specific extension
     sqe->IsQueued;
 #endif
     CxPlatZeroMemory(&sqe->Overlapped, sizeof(sqe->Overlapped));
-    sqe->UserData = user_data;
     return PostQueuedCompletionStatus(*queue, num_bytes, 0, &sqe->Overlapped) != 0;
 }
 
@@ -762,7 +786,7 @@ CxPlatEventQDequeue(
     )
 {
     ULONG out_count = 0;
-    if (!GetQueuedCompletionStatusEx(*queue, events, count, &out_count, wait_time, FALSE)) return FALSE;
+    if (!GetQueuedCompletionStatusEx(*queue, events, count, &out_count, wait_time, FALSE)) return 0;
     CXPLAT_DBG_ASSERT(out_count != 0);
     CXPLAT_DBG_ASSERT(events[0].lpOverlapped != NULL || out_count == 1);
 #if DEBUG
@@ -787,21 +811,52 @@ CxPlatEventQReturn(
 }
 
 inline
-void*
-CxPlatCqeUserData(
+BOOLEAN
+CxPlatSqeInitialize(
+    _In_ CXPLAT_EVENTQ* queue,
+    _In_ CXPLAT_EVENT_COMPLETION completion,
+    _Out_ CXPLAT_SQE* sqe
+    )
+{
+    UNREFERENCED_PARAMETER(queue);
+    CxPlatZeroMemory(sqe, sizeof(*sqe));
+    sqe->Completion = completion;
+    return TRUE;
+}
+
+inline
+void
+CxPlatSqeInitializeEx(
+    _In_ CXPLAT_EVENT_COMPLETION_HANDLER completion,
+    _Out_ CXPLAT_SQE* sqe
+    )
+{
+    sqe->Completion = completion;
+    CxPlatZeroMemory(&sqe->Overlapped, sizeof(sqe->Overlapped));
+#if DEBUG
+    sqe->IsQueued = FALSE;
+#endif
+}
+
+inline
+void
+CxPlatSqeCleanup(
+    _In_ CXPLAT_EVENTQ* queue,
+    _In_ CXPLAT_SQE* sqe
+    )
+{
+    UNREFERENCED_PARAMETER(queue);
+    UNREFERENCED_PARAMETER(sqe);
+}
+
+inline
+CXPLAT_SQE*
+CxPlatCqeGetSqe(
     _In_ const CXPLAT_CQE* cqe
     )
 {
-    return CONTAINING_RECORD(cqe->lpOverlapped, CXPLAT_SQE, Overlapped)->UserData;
+    return CONTAINING_RECORD(cqe->lpOverlapped, CXPLAT_SQE, Overlapped);
 }
-
-typedef struct DATAPATH_SQE DATAPATH_SQE;
-
-void
-CxPlatDatapathSqeInitialize(
-    _Out_ DATAPATH_SQE* DatapathSqe,
-    _In_ uint32_t CqeType
-    );
 
 //
 // Time Measurement Interfaces
@@ -978,25 +1033,24 @@ CxPlatTimeAtOrBefore32(
 //
 
 typedef struct CXPLAT_PROCESSOR_INFO {
-    uint32_t Index;  // Index in the current group
     uint16_t Group;  // The group number this processor is a part of
+    uint8_t Index;   // Index in the current group
+    uint8_t PADDING; // Here to align with PROCESSOR_NUMBER struct
 } CXPLAT_PROCESSOR_INFO;
+
+CXPLAT_STATIC_ASSERT(sizeof(CXPLAT_PROCESSOR_INFO) == sizeof(PROCESSOR_NUMBER), "Size check");
 
 typedef struct CXPLAT_PROCESSOR_GROUP_INFO {
     KAFFINITY Mask;  // Bit mask of active processors in the group
+    uint32_t Count;  // Count of active processors in the group
     uint32_t Offset; // Base process index offset this group starts at
 } CXPLAT_PROCESSOR_GROUP_INFO;
 
 extern CXPLAT_PROCESSOR_INFO* CxPlatProcessorInfo;
 extern CXPLAT_PROCESSOR_GROUP_INFO* CxPlatProcessorGroupInfo;
 
-#if defined(QUIC_RESTRICTED_BUILD)
-DWORD CxPlatProcMaxCount();
-DWORD CxPlatProcActiveCount();
-#else
-#define CxPlatProcMaxCount() GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS)
-#define CxPlatProcActiveCount() GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)
-#endif
+extern uint32_t CxPlatProcessorCount;
+#define CxPlatProcCount() CxPlatProcessorCount
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 inline
@@ -1006,18 +1060,8 @@ CxPlatProcCurrentNumber(
     ) {
     PROCESSOR_NUMBER ProcNumber;
     GetCurrentProcessorNumberEx(&ProcNumber);
-    return CxPlatProcessorGroupInfo[ProcNumber.Group].Offset + ProcNumber.Number;
-}
-
-_IRQL_requires_max_(DISPATCH_LEVEL)
-inline
-BOOLEAN
-CxPlatProcIsActive(
-    uint32_t Index
-    )
-{
-    const CXPLAT_PROCESSOR_INFO* Proc = &CxPlatProcessorInfo[Index];
-    return !!(CxPlatProcessorGroupInfo[Proc->Group].Mask & (1ULL << Proc->Index));
+    const CXPLAT_PROCESSOR_GROUP_INFO* Group = &CxPlatProcessorGroupInfo[ProcNumber.Group];
+    return Group->Offset + (ProcNumber.Number % Group->Count);
 }
 
 
@@ -1099,89 +1143,11 @@ CXPLAT_THREAD_CALLBACK(CxPlatThreadCustomStart, CustomContext); // CXPLAT_THREAD
 
 #endif // CXPLAT_USE_CUSTOM_THREAD_CONTEXT
 
-inline
 QUIC_STATUS
 CxPlatThreadCreate(
     _In_ CXPLAT_THREAD_CONFIG* Config,
     _Out_ CXPLAT_THREAD* Thread
-    )
-{
-#ifdef CXPLAT_USE_CUSTOM_THREAD_CONTEXT
-    CXPLAT_THREAD_CUSTOM_CONTEXT* CustomContext =
-        CXPLAT_ALLOC_NONPAGED(sizeof(CXPLAT_THREAD_CUSTOM_CONTEXT), QUIC_POOL_CUSTOM_THREAD);
-    if (CustomContext == NULL) {
-        QuicTraceEvent(
-            AllocFailure,
-            "Allocation of '%s' failed. (%llu bytes)",
-            "Custom thread context",
-            sizeof(CXPLAT_THREAD_CUSTOM_CONTEXT));
-        return QUIC_STATUS_OUT_OF_MEMORY;
-    }
-    CustomContext->Callback = Config->Callback;
-    CustomContext->Context = Config->Context;
-    *Thread =
-        CreateThread(
-            NULL,
-            0,
-            CxPlatThreadCustomStart,
-            CustomContext,
-            0,
-            NULL);
-    if (*Thread == NULL) {
-        CXPLAT_FREE(CustomContext, QUIC_POOL_CUSTOM_THREAD);
-        return GetLastError();
-    }
-#else // CXPLAT_USE_CUSTOM_THREAD_CONTEXT
-    *Thread =
-        CreateThread(
-            NULL,
-            0,
-            Config->Callback,
-            Config->Context,
-            0,
-            NULL);
-    if (*Thread == NULL) {
-        return GetLastError();
-    }
-#endif // CXPLAT_USE_CUSTOM_THREAD_CONTEXT
-    const CXPLAT_PROCESSOR_INFO* ProcInfo = &CxPlatProcessorInfo[Config->IdealProcessor];
-    GROUP_AFFINITY Group = {0};
-    if (Config->Flags & CXPLAT_THREAD_FLAG_SET_AFFINITIZE) {
-        Group.Mask = (KAFFINITY)(1ull << ProcInfo->Index);          // Fixed processor
-    } else {
-        Group.Mask = CxPlatProcessorGroupInfo[ProcInfo->Group].Mask;
-    }
-    Group.Group = ProcInfo->Group;
-    SetThreadGroupAffinity(*Thread, &Group, NULL);
-    if (Config->Flags & CXPLAT_THREAD_FLAG_SET_IDEAL_PROC) {
-        SetThreadIdealProcessor(*Thread, ProcInfo->Index);
-    }
-    if (Config->Flags & CXPLAT_THREAD_FLAG_HIGH_PRIORITY) {
-        SetThreadPriority(*Thread, THREAD_PRIORITY_HIGHEST);
-    }
-    if (Config->Name) {
-        WCHAR WideName[64] = L"";
-        size_t WideNameLength;
-        mbstowcs_s(
-            &WideNameLength,
-            WideName,
-            ARRAYSIZE(WideName) - 1,
-            Config->Name,
-            _TRUNCATE);
-#if defined(QUIC_RESTRICTED_BUILD)
-        SetThreadDescription(*Thread, WideName);
-#else
-        THREAD_NAME_INFORMATION_PRIVATE ThreadNameInfo;
-        RtlInitUnicodeString(&ThreadNameInfo.ThreadName, WideName);
-        NtSetInformationThread(
-            *Thread,
-            ThreadNameInformationPrivate,
-            &ThreadNameInfo,
-            sizeof(ThreadNameInfo));
-#endif
-    }
-    return QUIC_STATUS_SUCCESS;
-}
+    );
 #define CxPlatThreadDelete(Thread) CxPlatCloseHandle(*(Thread))
 #define CxPlatThreadWait(Thread) WaitForSingleObject(*(Thread), INFINITE)
 typedef uint32_t CXPLAT_THREAD_ID;
@@ -1258,66 +1224,9 @@ CxPlatUtf8ToWideChar(
 #define QUIC_UNSPECIFIED_COMPARTMENT_ID NET_IF_COMPARTMENT_ID_UNSPECIFIED
 #define QUIC_DEFAULT_COMPARTMENT_ID     NET_IF_COMPARTMENT_ID_PRIMARY
 
-inline
-QUIC_STATUS
-CxPlatSetCurrentThreadProcessorAffinity(
-    _In_ uint16_t ProcessorIndex
-    )
-{
-    const CXPLAT_PROCESSOR_INFO* ProcInfo = &CxPlatProcessorInfo[ProcessorIndex];
-    GROUP_AFFINITY Group = {0};
-    Group.Mask = (KAFFINITY)(1ull << ProcInfo->Index);
-    Group.Group = ProcInfo->Group;
-    if (SetThreadGroupAffinity(GetCurrentThread(), &Group, NULL)) {
-        return QUIC_STATUS_SUCCESS;
-    }
-    return HRESULT_FROM_WIN32(GetLastError());
-}
-
 #define QuicCompartmentIdGetCurrent() GetCurrentThreadCompartmentId()
 #define QuicCompartmentIdSetCurrent(CompartmentId) \
     HRESULT_FROM_WIN32(SetCurrentThreadCompartmentId(CompartmentId))
-
-inline
-QUIC_STATUS
-CxPlatSetCurrentThreadGroupAffinity(
-    _In_ uint16_t ProcessorGroup
-    )
-{
-    GROUP_AFFINITY Group = {0};
-    GROUP_AFFINITY ExistingGroup = {0};
-    if (!GetThreadGroupAffinity(GetCurrentThread(), &ExistingGroup)) {
-        return HRESULT_FROM_WIN32(GetLastError());
-    }
-    Group.Mask = ExistingGroup.Mask;
-    Group.Group = ProcessorGroup;
-    if (SetThreadGroupAffinity(GetCurrentThread(), &Group, NULL)) {
-        return QUIC_STATUS_SUCCESS;
-    }
-    return HRESULT_FROM_WIN32(GetLastError());
-}
-
-#else
-
-inline
-QUIC_STATUS
-CxPlatSetCurrentThreadProcessorAffinity(
-    _In_ uint16_t ProcessorIndex
-    )
-{
-    UNREFERENCED_PARAMETER(ProcessorIndex);
-    return QUIC_STATUS_SUCCESS;
-}
-
-inline
-QUIC_STATUS
-CxPlatSetCurrentThreadGroupAffinity(
-    _In_ uint16_t ProcessorGroup
-    )
-{
-    UNREFERENCED_PARAMETER(ProcessorGroup);
-    return QUIC_STATUS_SUCCESS;
-}
 
 #endif
 

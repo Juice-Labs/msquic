@@ -99,26 +99,26 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, PacketTxLostFack,
 
 /*----------------------------------------------------------
 // Decoder Ring for PacketTxLostRack
-// [%c][TX][%llu] Lost: RACK %u ms
+// [%c][TX][%llu] Lost: RACK %llu ms
 // QuicTraceLogVerbose(
                         PacketTxLostRack,
-                        "[%c][TX][%llu] Lost: RACK %u ms",
+                        "[%c][TX][%llu] Lost: RACK %llu ms",
                         PtkConnPre(Connection),
                         Packet->PacketNumber,
-                        CxPlatTimeDiff32(Packet->SentTime, TimeNow));
+                        CxPlatTimeDiff64(Packet->SentTime, TimeNow));
 // arg2 = arg2 = PtkConnPre(Connection) = arg2
 // arg3 = arg3 = Packet->PacketNumber = arg3
-// arg4 = arg4 = CxPlatTimeDiff32(Packet->SentTime, TimeNow) = arg4
+// arg4 = arg4 = CxPlatTimeDiff64(Packet->SentTime, TimeNow) = arg4
 ----------------------------------------------------------*/
 TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, PacketTxLostRack,
     TP_ARGS(
         unsigned char, arg2,
         unsigned long long, arg3,
-        unsigned int, arg4), 
+        unsigned long long, arg4), 
     TP_FIELDS(
         ctf_integer(unsigned char, arg2, arg2)
         ctf_integer(uint64_t, arg3, arg3)
-        ctf_integer(unsigned int, arg4, arg4)
+        ctf_integer(uint64_t, arg4, arg4)
     )
 )
 
@@ -200,13 +200,13 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, PacketTxSpuriousLoss,
             PacketTxAcked,
             "[%c][TX][%llu] ACKed (%u.%03u ms)",
             PtkConnPre(Connection),
-            Packet->PacketNumber,
-            PacketRtt / 1000,
-            PacketRtt % 1000);
+            PacketMeta->PacketNumber,
+            (uint32_t)(PacketRtt / 1000),
+            (uint32_t)(PacketRtt % 1000));
 // arg2 = arg2 = PtkConnPre(Connection) = arg2
-// arg3 = arg3 = Packet->PacketNumber = arg3
-// arg4 = arg4 = PacketRtt / 1000 = arg4
-// arg5 = arg5 = PacketRtt % 1000 = arg5
+// arg3 = arg3 = PacketMeta->PacketNumber = arg3
+// arg4 = arg4 = (uint32_t)(PacketRtt / 1000) = arg4
+// arg5 = arg5 = (uint32_t)(PacketRtt % 1000) = arg5
 ----------------------------------------------------------*/
 TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, PacketTxAcked,
     TP_ARGS(
@@ -260,7 +260,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, HandshakeConfirmedAck,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -282,7 +282,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, PathMinMtuValidated,
         const void *, arg1,
         unsigned char, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(unsigned char, arg3, arg3)
     )
 )
@@ -305,7 +305,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, PathValidationTimeout,
         const void *, arg1,
         unsigned char, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(unsigned char, arg3, arg3)
     )
 )
@@ -328,7 +328,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ScheduleProbe,
         const void *, arg1,
         unsigned short, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(unsigned short, arg3, arg3)
     )
 )
@@ -348,7 +348,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, KeyChangeConfirmed,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -362,11 +362,11 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, KeyChangeConfirmed,
             "[conn][%p] Setting loss detection %hhu timer for %u us. (ProbeCount=%hu)",
             Connection,
             TimeoutType,
-            Delay,
+            (uint32_t)Delay,
             LossDetection->ProbeCount);
 // arg2 = arg2 = Connection = arg2
 // arg3 = arg3 = TimeoutType = arg3
-// arg4 = arg4 = Delay = arg4
+// arg4 = arg4 = (uint32_t)Delay = arg4
 // arg5 = arg5 = LossDetection->ProbeCount = arg5
 ----------------------------------------------------------*/
 TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ConnLossDetectionTimerSet,
@@ -376,7 +376,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ConnLossDetectionTimerSet,
         unsigned int, arg4,
         unsigned short, arg5), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned char, arg3, arg3)
         ctf_integer(unsigned int, arg4, arg4)
         ctf_integer(unsigned short, arg5, arg5)
@@ -430,7 +430,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ConnPacketLost,
         unsigned char, arg4,
         unsigned char, arg5), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(uint64_t, arg3, arg3)
         ctf_integer(unsigned char, arg4, arg4)
         ctf_integer(unsigned char, arg5, arg5)
@@ -458,7 +458,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ConnPacketACKed,
         unsigned long long, arg3,
         unsigned char, arg4), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(uint64_t, arg3, arg3)
         ctf_integer(unsigned char, arg4, arg4)
     )
@@ -482,7 +482,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ConnError,
         const void *, arg2,
         const char *, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_string(arg3, arg3)
     )
 )
@@ -505,7 +505,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ConnEcnCapable,
         const void *, arg2,
         unsigned short, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned short, arg3, arg3)
     )
 )
@@ -542,7 +542,7 @@ TRACEPOINT_EVENT(CLOG_LOSS_DETECTION_C, ConnEcnFailed,
         long long, arg7,
         unsigned short, arg8), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(int, arg3, arg3)
         ctf_integer(uint64_t, arg4, arg4)
         ctf_integer(uint64_t, arg5, arg5)

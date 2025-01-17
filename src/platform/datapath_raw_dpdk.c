@@ -83,22 +83,6 @@ CXPLAT_STATIC_ASSERT(
 CXPLAT_THREAD_CALLBACK(CxPlatDpdkMainThread, Context);
 static int CxPlatDpdkWorkerThread(_In_ void* Context);
 
-CXPLAT_RECV_DATA*
-CxPlatDataPathRecvPacketToRecvData(
-    _In_ const CXPLAT_RECV_PACKET* const Context
-    )
-{
-    return (CXPLAT_RECV_DATA*)(((uint8_t*)Context) - sizeof(DPDK_RX_PACKET));
-}
-
-CXPLAT_RECV_PACKET*
-CxPlatDataPathRecvDataToRecvPacket(
-    _In_ const CXPLAT_RECV_DATA* const Datagram
-    )
-{
-    return (CXPLAT_RECV_PACKET*)(((uint8_t*)Datagram) + sizeof(DPDK_RX_PACKET));
-}
-
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 CxPlatDpdkReadConfig(
@@ -106,7 +90,7 @@ CxPlatDpdkReadConfig(
     _In_opt_ CXPLAT_DATAPATH_CONFIG* Config
     )
 {
-    Dpdk->Cpu = (uint16_t)(CxPlatProcMaxCount() - 1);
+    Dpdk->Cpu = (uint16_t)(CxPlatProcCount() - 1);
 
     //
     // Read user-specified global config.
@@ -154,9 +138,11 @@ QUIC_STATUS
 CxPlatDpRawInitialize(
     _Inout_ CXPLAT_DATAPATH* Datapath,
     _In_ uint32_t ClientRecvContextLength,
+    _In_ CXPLAT_WORKER_POOL* WorkerPool,
     _In_opt_ const QUIC_EXECUTION_CONFIG* Config
     )
 {
+    UNREFERENCED_PARAMETER(WorkerPool);
     DPDK_DATAPATH* Dpdk = (DPDK_DATAPATH*)Datapath;
     CXPLAT_THREAD_CONFIG Config = {
         0, 0, "DpdkMain", CxPlatDpdkMainThread, Dpdk

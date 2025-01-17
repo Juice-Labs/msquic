@@ -1129,7 +1129,7 @@ TEST_F(TlsTest, HandshakeParallel)
     CXPLAT_THREAD Threads[64];
     CxPlatZeroMemory(&Threads, sizeof(Threads));
     const uint32_t ThreadCount =
-        CXPLAT_MIN(ARRAYSIZE(Threads), CxPlatProcActiveCount() * 4);
+        CXPLAT_MIN(ARRAYSIZE(Threads), CxPlatProcCount() * 4);
 
     for (uint32_t i = 0; i < ThreadCount; ++i) {
         VERIFY_QUIC_SUCCESS(CxPlatThreadCreate(&Config, &Threads[i]));
@@ -2222,6 +2222,7 @@ TEST_F(TlsTest, PlatformSpecificFlagsSchannel)
         QUIC_CREDENTIAL_FLAG_REVOCATION_CHECK_END_CERT, QUIC_CREDENTIAL_FLAG_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
         QUIC_CREDENTIAL_FLAG_IGNORE_NO_REVOCATION_CHECK, QUIC_CREDENTIAL_FLAG_IGNORE_REVOCATION_OFFLINE,
         QUIC_CREDENTIAL_FLAG_CACHE_ONLY_URL_RETRIEVAL, QUIC_CREDENTIAL_FLAG_REVOCATION_CHECK_CACHE_ONLY,
+        QUIC_CREDENTIAL_FLAG_DISABLE_AIA,
 #ifndef __APPLE__
         QUIC_CREDENTIAL_FLAG_REVOCATION_CHECK_CHAIN,
 #endif

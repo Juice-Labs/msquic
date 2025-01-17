@@ -5,7 +5,7 @@
 
 Abstract:
 
-    This module provides the implementation for most of the MsQuic* APIs.
+    This module provides the implementation for most of the public APIs exposed in QUIC_API_TABLE.
 
 --*/
 
@@ -737,8 +737,6 @@ MsQuicStreamClose(
 
     } else {
 
-        QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
-
         BOOLEAN AlreadyShutdownComplete = Stream->ClientCallbackHandler == NULL;
         if (AlreadyShutdownComplete) {
             //
@@ -855,7 +853,11 @@ MsQuicStreamStart(
     //
     // Queue the operation but don't wait for the completion.
     //
-    QuicConnQueueOper(Connection, Oper);
+    if (Flags & QUIC_STREAM_START_FLAG_PRIORITY_WORK) {
+        QuicConnQueuePriorityOper(Connection, Oper);
+    } else {
+        QuicConnQueueOper(Connection, Oper);
+    }
     Status = QUIC_STATUS_PENDING;
 
 Exit:
@@ -928,7 +930,6 @@ MsQuicStreamShutdown(
     Connection = Stream->Connection;
 
     QUIC_CONN_VERIFY(Connection, !Connection->State.Freed);
-    QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
 
     if (Flags & QUIC_STREAM_SHUTDOWN_FLAG_INLINE &&
         Connection->WorkerThreadID == CxPlatCurThreadID()) {
@@ -1007,6 +1008,8 @@ MsQuicStreamSend(
     uint64_t TotalLength;
     QUIC_SEND_REQUEST* SendRequest;
     BOOLEAN QueueOper = TRUE;
+    const BOOLEAN IsPriority = !!(Flags & QUIC_SEND_FLAG_PRIORITY_WORK);
+    BOOLEAN SendInline;
     QUIC_OPERATION* Oper;
 
     QuicTraceEvent(
@@ -1081,6 +1084,14 @@ MsQuicStreamSend(
     SendRequest->TotalLength = TotalLength;
     SendRequest->ClientContext = ClientSendContext;
 
+#pragma warning(push)
+#pragma warning(disable:6240) // CXPLAT_AT_DISPATCH only really does anything for kernel mode
+    SendInline =
+        !Connection->Settings.SendBufferingEnabled &&
+        !CXPLAT_AT_DISPATCH() && // Never run inline if at DISPATCH
+        Connection->WorkerThreadID == CxPlatCurThreadID();
+#pragma warning(pop)
+
     CxPlatDispatchLockAcquire(&Stream->ApiSendRequestLock);
     if (!Stream->Flags.SendEnabled) {
         Status =
@@ -1095,6 +1106,15 @@ MsQuicStreamSend(
         }
         *ApiSendRequestsTail = SendRequest;
         Status = QUIC_STATUS_SUCCESS;
+
+        if (!SendInline && QueueOper) {
+            //
+            // Async stream operations need to hold a ref on the stream so that
+            // the stream isn't freed before the operation can be processed. The
+            // ref is released after the operation is processed.
+            //
+            QuicStreamAddRef(Stream, QUIC_STREAM_REF_OPERATION);
+        }
     }
     CxPlatDispatchLockRelease(&Stream->ApiSendRequestLock);
 
@@ -1103,8 +1123,13 @@ MsQuicStreamSend(
         goto Exit;
     }
 
-    if (!Connection->Settings.SendBufferingEnabled &&
-        Connection->WorkerThreadID == CxPlatCurThreadID()) {
+    //
+    // From here on, we cannot fail the call because the stream has been queued
+    // and possibly already started to be processed.
+    //
+    Status = QUIC_STATUS_PENDING;
+
+    if (SendInline) {
 
         CXPLAT_PASSIVE_CODE();
 
@@ -1125,6 +1150,13 @@ MsQuicStreamSend(
                 "Allocation of '%s' failed. (%llu bytes)",
                 "STRM_SEND operation",
                 0);
+
+            //
+            // We failed to alloc the operation we needed to queue, so make sure
+            // to release the ref we took above.
+            //
+            QuicStreamRelease(Stream, QUIC_STREAM_REF_OPERATION);
+
             //
             // We can't fail the send at this point, because we're already queued
             // the send above. So instead, we're just going to abort the whole
@@ -1143,26 +1175,22 @@ MsQuicStreamSend(
             Oper->API_CALL.Context->CONN_SHUTDOWN.ErrorCode = (QUIC_VAR_INT)QUIC_STATUS_OUT_OF_MEMORY;
             Oper->API_CALL.Context->CONN_SHUTDOWN.RegistrationShutdown = FALSE;
             Oper->API_CALL.Context->CONN_SHUTDOWN.TransportShutdown = TRUE;
-            QuicConnQueueOper(Connection, Oper);
+            QuicConnQueueHighestPriorityOper(Connection, Oper);
             goto Exit;
         }
+
         Oper->API_CALL.Context->Type = QUIC_API_TYPE_STRM_SEND;
         Oper->API_CALL.Context->STRM_SEND.Stream = Stream;
 
         //
-        // Async stream operations need to hold a ref on the stream so that the
-        // stream isn't freed before the operation can be processed. The ref is
-        // released after the operation is processed.
-        //
-        QuicStreamAddRef(Stream, QUIC_STREAM_REF_OPERATION);
-
-        //
         // Queue the operation but don't wait for the completion.
         //
-        QuicConnQueueOper(Connection, Oper);
+        if (IsPriority) {
+            QuicConnQueuePriorityOper(Connection, Oper);
+        } else {
+            QuicConnQueueOper(Connection, Oper);
+        }
     }
-
-    Status = QUIC_STATUS_PENDING;
 
 Exit:
 
@@ -1283,13 +1311,9 @@ MsQuicStreamReceiveComplete(
         (Connection->WorkerThreadID == CxPlatCurThreadID()) ||
         !Connection->State.HandleClosed);
 
-    if (!Stream->Flags.Started || !Stream->Flags.ReceiveCallPending) {
-        QuicTraceEvent(
-            ApiError,
-            "[ api] Error %u",
-            (uint32_t)QUIC_STATUS_INVALID_STATE);
-        goto Exit;
-    }
+    QUIC_CONN_VERIFY(Connection,
+        (Stream->RecvPendingLength == 0) || // Stream might have been shutdown already
+        BufferLength <= Stream->RecvPendingLength);
 
     QuicTraceEvent(
         StreamAppReceiveCompleteCall,
@@ -1297,46 +1321,28 @@ MsQuicStreamReceiveComplete(
         Stream,
         BufferLength);
 
+    InterlockedExchangeAdd64(
+        (int64_t*)&Stream->RecvCompletionLength, (int64_t)BufferLength);
+
     if (Connection->WorkerThreadID == CxPlatCurThreadID() &&
         Stream->Flags.ReceiveCallActive) {
-
-        CXPLAT_PASSIVE_CODE();
-
-        BOOLEAN AlreadyInline = Connection->State.InlineApiExecution;
-        if (!AlreadyInline) {
-            Connection->State.InlineApiExecution = TRUE;
-        }
-        QuicStreamReceiveCompleteInline(Stream, BufferLength);
-        if (!AlreadyInline) {
-            Connection->State.InlineApiExecution = FALSE;
-        }
-
-        goto Exit;
+        goto Exit; // No need to queue a completion operation when run inline
     }
 
     Oper = InterlockedFetchAndClearPointer((void**)&Stream->ReceiveCompleteOperation);
-    if (Oper == NULL) {
-        QuicTraceEvent(
-            ApiError,
-            "[ api] Error %u",
-            (uint32_t)QUIC_STATUS_NOT_SUPPORTED);
-        goto Exit; // Duplicate calls to receive complete
+    if (Oper) {
+        //
+        // Async stream operations need to hold a ref on the stream so that the
+        // stream isn't freed before the operation can be processed. The ref is
+        // released after the operation is processed.
+        //
+        QuicStreamAddRef(Stream, QUIC_STREAM_REF_OPERATION);
+
+        //
+        // Queue the operation but don't wait for the completion.
+        //
+        QuicConnQueueOper(Connection, Oper);
     }
-
-    Oper->API_CALL.Context->STRM_RECV_COMPLETE.Stream = Stream;
-    Oper->API_CALL.Context->STRM_RECV_COMPLETE.BufferLength = BufferLength;
-
-    //
-    // Async stream operations need to hold a ref on the stream so that the
-    // stream isn't freed before the operation can be processed. The ref is
-    // released after the operation is processed.
-    //
-    QuicStreamAddRef(Stream, QUIC_STREAM_REF_OPERATION);
-
-    //
-    // Queue the operation but don't wait for the completion.
-    //
-    QuicConnQueueOper(Connection, Oper);
 
 Exit:
 
@@ -1359,6 +1365,9 @@ MsQuicSetParam(
     )
 {
     CXPLAT_PASSIVE_CODE();
+
+    const BOOLEAN IsPriority = !!(Param & QUIC_PARAM_HIGH_PRIORITY);
+    Param &= ~QUIC_PARAM_HIGH_PRIORITY;
 
     if ((Handle == NULL) ^ QUIC_PARAM_IS_GLOBAL(Param)) {
         //
@@ -1426,8 +1435,6 @@ MsQuicSetParam(
         goto Error;
     }
 
-    QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
-
     QUIC_OPERATION Oper = { 0 };
     QUIC_API_CONTEXT ApiCtx;
 
@@ -1447,7 +1454,11 @@ MsQuicSetParam(
     //
     // Queue the operation and wait for it to be processed.
     //
-    QuicConnQueueOper(Connection, &Oper);
+    if (IsPriority) {
+        QuicConnQueuePriorityOper(Connection, &Oper);
+    } else {
+        QuicConnQueueOper(Connection, &Oper);
+    }
     QuicTraceEvent(
         ApiWaitOperation,
         "[ api] Waiting on operation");
@@ -1479,6 +1490,9 @@ MsQuicGetParam(
 {
     CXPLAT_PASSIVE_CODE();
 
+    const BOOLEAN IsPriority = !!(Param & QUIC_PARAM_HIGH_PRIORITY);
+    Param &= ~QUIC_PARAM_HIGH_PRIORITY;
+
     if ((Handle == NULL) ^ QUIC_PARAM_IS_GLOBAL(Param) ||
         BufferLength == NULL) {
         //
@@ -1488,13 +1502,13 @@ MsQuicGetParam(
         return QUIC_STATUS_INVALID_PARAMETER;
     }
 
-    QUIC_STATUS Status;
-
     QuicTraceEvent(
         ApiEnter,
         "[ api] Enter %u (%p).",
         QUIC_TRACE_API_GET_PARAM,
         Handle);
+
+    QUIC_STATUS Status;
 
     if (QUIC_PARAM_IS_GLOBAL(Param)) {
         //
@@ -1546,8 +1560,6 @@ MsQuicGetParam(
         goto Error;
     }
 
-    QUIC_CONN_VERIFY(Connection, !Connection->State.HandleClosed);
-
     QUIC_OPERATION Oper = { 0 };
     QUIC_API_CONTEXT ApiCtx;
 
@@ -1567,7 +1579,11 @@ MsQuicGetParam(
     //
     // Queue the operation and wait for it to be processed.
     //
-    QuicConnQueueOper(Connection, &Oper);
+    if (IsPriority) {
+        QuicConnQueuePriorityOper(Connection, &Oper);
+    } else {
+        QuicConnQueueOper(Connection, &Oper);
+    }
     QuicTraceEvent(
         ApiWaitOperation,
         "[ api] Waiting on operation");

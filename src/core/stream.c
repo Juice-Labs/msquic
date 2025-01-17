@@ -27,7 +27,7 @@ QuicStreamInitialize(
 {
     QUIC_STATUS Status;
     QUIC_STREAM* Stream;
-    uint8_t* PreallocatedRecvBuffer = NULL;
+    QUIC_RECV_CHUNK* PreallocatedRecvChunk = NULL;
     uint32_t InitialRecvBufferLength;
     QUIC_WORKER* Worker = Connection->Worker;
 
@@ -66,6 +66,7 @@ QuicStreamInitialize(
     Stream->Flags.Allocated = TRUE;
     Stream->Flags.SendEnabled = TRUE;
     Stream->Flags.ReceiveEnabled = TRUE;
+    Stream->Flags.ReceiveMultiple = Connection->Settings.StreamMultiReceiveEnabled;
     Stream->RecvMaxLength = UINT64_MAX;
     Stream->RefCount = 1;
     Stream->SendRequestsTail = &Stream->SendRequests;
@@ -75,6 +76,12 @@ QuicStreamInitialize(
     QuicRangeInitialize(
         QUIC_MAX_RANGE_ALLOC_SIZE,
         &Stream->SparseAckRanges);
+    Stream->ReceiveCompleteOperation = &Stream->ReceiveCompleteOperationStorage;
+    Stream->ReceiveCompleteOperationStorage.API_CALL.Context = &Stream->ReceiveCompleteApiCtxStorage;
+    Stream->ReceiveCompleteOperation->Type = QUIC_OPER_TYPE_API_CALL;
+    Stream->ReceiveCompleteOperation->FreeAfterProcess = FALSE;
+    Stream->ReceiveCompleteOperation->API_CALL.Context->Type = QUIC_API_TYPE_STRM_RECV_COMPLETE;
+    Stream->ReceiveCompleteOperation->API_CALL.Context->STRM_RECV_COMPLETE.Stream = Stream;
 #if DEBUG
     Stream->RefTypeCount[QUIC_STREAM_REF_APP] = 1;
 #endif
@@ -107,31 +114,40 @@ QuicStreamInitialize(
 
     InitialRecvBufferLength = Connection->Settings.StreamRecvBufferDefault;
     if (InitialRecvBufferLength == QUIC_DEFAULT_STREAM_RECV_BUFFER_SIZE) {
-        PreallocatedRecvBuffer = CxPlatPoolAlloc(&Worker->DefaultReceiveBufferPool);
-        if (PreallocatedRecvBuffer == NULL) {
+        PreallocatedRecvChunk = CxPlatPoolAlloc(&Worker->DefaultReceiveBufferPool);
+        if (PreallocatedRecvChunk == NULL) {
             Status = QUIC_STATUS_OUT_OF_MEMORY;
             goto Exit;
         }
     }
 
+    const uint32_t FlowControlWindowSize = Stream->Flags.Unidirectional
+        ? Connection->Settings.StreamRecvWindowUnidiDefault
+        : OpenedRemotely
+            ? Connection->Settings.StreamRecvWindowBidiRemoteDefault
+            : Connection->Settings.StreamRecvWindowBidiLocalDefault;
+
     Status =
         QuicRecvBufferInitialize(
             &Stream->RecvBuffer,
             InitialRecvBufferLength,
-            Connection->Settings.StreamRecvWindowDefault,
-            FALSE,
-            PreallocatedRecvBuffer);
+            FlowControlWindowSize,
+            Stream->Flags.ReceiveMultiple ?
+                QUIC_RECV_BUF_MODE_MULTIPLE : QUIC_RECV_BUF_MODE_CIRCULAR,
+            PreallocatedRecvChunk);
     if (QUIC_FAILED(Status)) {
         goto Exit;
     }
 
     Stream->MaxAllowedRecvOffset = Stream->RecvBuffer.VirtualBufferLength;
-    Stream->RecvWindowLastUpdate = CxPlatTimeUs32();
+    Stream->RecvWindowLastUpdate = CxPlatTimeUs64();
+
+    QuicConnAddRef(Connection, QUIC_CONN_REF_STREAM);
 
     Stream->Flags.Initialized = TRUE;
     *NewStream = Stream;
     Stream = NULL;
-    PreallocatedRecvBuffer = NULL;
+    PreallocatedRecvChunk = NULL;
 
 Exit:
 
@@ -146,8 +162,8 @@ Exit:
         Stream->Flags.Freed = TRUE;
         CxPlatPoolFree(&Worker->StreamPool, Stream);
     }
-    if (PreallocatedRecvBuffer) {
-        CxPlatPoolFree(&Worker->DefaultReceiveBufferPool, PreallocatedRecvBuffer);
+    if (PreallocatedRecvChunk) {
+        CxPlatPoolFree(&Worker->DefaultReceiveBufferPool, PreallocatedRecvChunk);
     }
 
     return Status;
@@ -187,14 +203,10 @@ QuicStreamFree(
     CxPlatDispatchLockUninitialize(&Stream->ApiSendRequestLock);
     CxPlatRefUninitialize(&Stream->RefCount);
 
-    if (Stream->ReceiveCompleteOperation) {
-        QuicOperationFree(Worker, Stream->ReceiveCompleteOperation);
-    }
-
-    if (Stream->RecvBuffer.PreallocatedBuffer) {
+    if (Stream->RecvBuffer.PreallocatedChunk) {
         CxPlatPoolFree(
             &Worker->DefaultReceiveBufferPool,
-            Stream->RecvBuffer.PreallocatedBuffer);
+            Stream->RecvBuffer.PreallocatedChunk);
     }
 
     Stream->Flags.Freed = TRUE;
@@ -209,6 +221,8 @@ QuicStreamFree(
             Stream);
 #pragma warning(pop)
     }
+
+    QuicConnRelease(Connection, QUIC_CONN_REF_STREAM);
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -264,24 +278,24 @@ QuicStreamStart(
     uint64_t Now = CxPlatTimeUs64();
     Stream->BlockedTimings.CachedConnSchedulingUs =
         Stream->Connection->BlockedTimings.Scheduling.CumulativeTimeUs +
-        Stream->Connection->BlockedTimings.Scheduling.LastStartTimeUs != 0 ?
-            CxPlatTimeDiff64(Stream->Connection->BlockedTimings.Scheduling.LastStartTimeUs, Now) : 0;
+        (Stream->Connection->BlockedTimings.Scheduling.LastStartTimeUs != 0 ?
+            CxPlatTimeDiff64(Stream->Connection->BlockedTimings.Scheduling.LastStartTimeUs, Now) : 0);
     Stream->BlockedTimings.CachedConnPacingUs =
         Stream->Connection->BlockedTimings.Pacing.CumulativeTimeUs +
-        Stream->Connection->BlockedTimings.Pacing.LastStartTimeUs != 0 ?
-        CxPlatTimeDiff64(Stream->Connection->BlockedTimings.Pacing.LastStartTimeUs, Now) : 0;
+        (Stream->Connection->BlockedTimings.Pacing.LastStartTimeUs != 0 ?
+            CxPlatTimeDiff64(Stream->Connection->BlockedTimings.Pacing.LastStartTimeUs, Now) : 0);
     Stream->BlockedTimings.CachedConnAmplificationProtUs =
         Stream->Connection->BlockedTimings.AmplificationProt.CumulativeTimeUs +
-        Stream->Connection->BlockedTimings.AmplificationProt.LastStartTimeUs != 0 ?
-        CxPlatTimeDiff64(Stream->Connection->BlockedTimings.AmplificationProt.LastStartTimeUs, Now) : 0;
+        (Stream->Connection->BlockedTimings.AmplificationProt.LastStartTimeUs != 0 ?
+            CxPlatTimeDiff64(Stream->Connection->BlockedTimings.AmplificationProt.LastStartTimeUs, Now) : 0);
     Stream->BlockedTimings.CachedConnCongestionControlUs =
         Stream->Connection->BlockedTimings.CongestionControl.CumulativeTimeUs +
-        Stream->Connection->BlockedTimings.CongestionControl.LastStartTimeUs != 0 ?
-        CxPlatTimeDiff64(Stream->Connection->BlockedTimings.CongestionControl.LastStartTimeUs, Now) : 0;
+        (Stream->Connection->BlockedTimings.CongestionControl.LastStartTimeUs != 0 ?
+            CxPlatTimeDiff64(Stream->Connection->BlockedTimings.CongestionControl.LastStartTimeUs, Now) : 0);
     Stream->BlockedTimings.CachedConnFlowControlUs =
         Stream->Connection->BlockedTimings.FlowControl.CumulativeTimeUs +
-        Stream->Connection->BlockedTimings.FlowControl.LastStartTimeUs != 0 ?
-        CxPlatTimeDiff64(Stream->Connection->BlockedTimings.FlowControl.LastStartTimeUs, Now) : 0;
+        (Stream->Connection->BlockedTimings.FlowControl.LastStartTimeUs != 0 ?
+            CxPlatTimeDiff64(Stream->Connection->BlockedTimings.FlowControl.LastStartTimeUs, Now) : 0);
 
     QuicTraceEvent(
         StreamCreated,
@@ -434,6 +448,7 @@ QuicStreamIndicateEvent(
     _Inout_ QUIC_STREAM_EVENT* Event
     )
 {
+    CXPLAT_PASSIVE_CODE();
     QUIC_STATUS Status;
     if (Stream->ClientCallbackHandler != NULL) {
         //
@@ -520,7 +535,7 @@ QuicStreamIndicateShutdownComplete(
         QuicTraceLogStreamVerbose(
             IndicateStreamShutdownComplete,
             Stream,
-            "Indicating QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE [ConnectionShutdown=%hhu, ConnectionShutdownByApp=%hhu, ConnectionClosedRemotely=%hhu, ConnectionErrorCode=0x%llx, ConnectionCloseStatus=0x%x]",
+            "Indicating QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE [Shutdown=%hhu, ShutdownByApp=%hhu, ClosedRemotely=%hhu, ErrorCode=0x%llx, CloseStatus=0x%x]",
             Event.SHUTDOWN_COMPLETE.ConnectionShutdown,
             Event.SHUTDOWN_COMPLETE.ConnectionShutdownByApp,
             Event.SHUTDOWN_COMPLETE.ConnectionClosedRemotely,
@@ -574,6 +589,13 @@ QuicStreamShutdown(
         // and shutdown complete events now, if they haven't already been
         // delivered.
         //
+        if (Stream->Flags.RemoteCloseResetReliable || Stream->Flags.LocalCloseResetReliable) {
+             QuicTraceLogStreamWarning(
+                ShutdownImmediatePendingReliableReset,
+                Stream,
+                "Invalid immediate shutdown request (pending reliable reset).");
+            return;
+        }
         QuicStreamIndicateSendShutdownComplete(Stream, FALSE);
         QuicStreamIndicateShutdownComplete(Stream);
     }
@@ -633,7 +655,7 @@ QuicStreamParamSet(
 
     case QUIC_PARAM_STREAM_PRIORITY: {
 
-        if (BufferLength != sizeof(Stream->SendPriority)) {
+        if (BufferLength != sizeof(Stream->SendPriority) || Buffer == NULL) {
             Status = QUIC_STATUS_INVALID_PARAMETER;
             break;
         }
@@ -658,6 +680,58 @@ QuicStreamParamSet(
         Status = QUIC_STATUS_SUCCESS;
         break;
     }
+
+   case QUIC_PARAM_STREAM_RELIABLE_OFFSET:
+
+        if (BufferLength != sizeof(uint64_t) || Buffer == NULL) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        if (!Stream->Connection->State.ReliableResetStreamNegotiated ||
+            *(uint64_t*)Buffer > Stream->QueuedSendOffset) {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+
+        if (Stream->Flags.LocalCloseReset) {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+
+        if (!Stream->Flags.LocalCloseResetReliable) {
+            //
+            // We haven't called shutdown reliable yet. App can set ReliableOffsetSend to be whatever.
+            //
+            Stream->ReliableOffsetSend = *(uint64_t*)Buffer;
+        } else if (*(uint64_t*)Buffer < Stream->ReliableOffsetSend) {
+            //
+            // TODO - Determine if we need to support this feature in future iterations.
+            //
+            // We have previously called shutdown reliable.
+            // Now we are loosening the conditions of the ReliableReset,
+            // but we have already sent the peer a stale frame, we must retransmit
+            // this new frame, and update the metadata.
+            //
+            QuicTraceLogStreamInfo(
+                MultipleReliableResetSendNotSupported,
+                Stream,
+                "Multiple RELIABLE_RESET frames sending not supported.");
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        } else {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+
+        QuicTraceLogStreamInfo(
+            ReliableSendOffsetSet,
+            Stream,
+            "Reliable send offset set to %llu",
+            *(uint64_t*)Buffer);
+
+        Status = QUIC_STATUS_SUCCESS;
+        break;
 
     default:
         Status = QUIC_STATUS_INVALID_PARAMETER;
@@ -838,6 +912,44 @@ QuicStreamParamGet(
         Status = QUIC_STATUS_SUCCESS;
         break;
     }
+
+    case QUIC_PARAM_STREAM_RELIABLE_OFFSET:
+        if (*BufferLength < sizeof(uint64_t)) {
+            *BufferLength = sizeof(uint64_t);
+            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        if (Buffer == NULL) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+        if (Stream->ReliableOffsetSend == 0) {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+        *(uint64_t*) Buffer = Stream->ReliableOffsetSend;
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+
+    case QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV:
+        if (*BufferLength < sizeof(uint64_t)) {
+            *BufferLength = sizeof(uint64_t);
+            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        if (Buffer == NULL) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+        if (!Stream->Flags.RemoteCloseResetReliable) {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+
+        *(uint64_t*)Buffer = Stream->RecvMaxLength;
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+
     default:
         Status = QUIC_STATUS_INVALID_PARAMETER;
         break;

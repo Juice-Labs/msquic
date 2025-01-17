@@ -28,10 +28,13 @@ The following settings are available via registry as well as via [QUIC_SETTINGS]
 |------------------------------------|------------|-----------------------------|-------------------|-------------------------------------------------------------------------------------------------------------------------------|
 | Max Bytes per Key                  | uint64_t   | MaxBytesPerKey              |   274,877,906,944 | Maximum number of bytes to encrypt with a single 1-RTT encryption key before initiating key update.                           |
 | Handshake Idle Timeout             | uint64_t   | HandshakeIdleTimeoutMs      |            10,000 | How long a handshake can idle before it is discarded.                                                                         |
-| Idle Timeout                       | uint64_t   | IdleTimeoutMs               |            30,000 | How long a connection can go idle before it is gracefully shut down. 0 to disable timeout                                     |
+| Idle Timeout                       | uint64_t   | IdleTimeoutMs               |            30,000 | How long a connection can go idle before it is silently shut down. 0 to disable timeout                                       |
 | Max TLS Send Buffer (Client)       | uint32_t   | TlsClientMaxSendBuffer      |             4,096 | How much client TLS data to buffer.                                                                                           |
 | Max TLS Send Buffer (Server)       | uint32_t   | TlsServerMaxSendBuffer      |             8,192 | How much server TLS data to buffer.                                                                                           |
-| Stream Receive Window              | uint32_t   | StreamRecvWindowDefault     |            32,768 | Initial stream receive window size.                                                                                           |
+| Stream Receive Window              | uint32_t   | StreamRecvWindowDefault     |            65,536 | Initial stream receive window size for all stream types.                                                                      |
+| Stream Receive Window (Bidirectional, locally created) | uint32_t   | StreamRecvWindowBidiLocalDefault |            - | If set, overrides stream receive window size for locally initiated bidirectional streams.                                     |
+| Stream Receive Window (Bidirectional, remotely created) | uint32_t   | StreamRecvWindowBidiRemoteDefault |            - | If set, overrides stream receive window size for remote initiated bidirectional streams.                                     |
+| Stream Receive Window (Unidirectional) | uint32_t   | StreamRecvWindowUnidiDefault |            - | If set, overrides stream receive window size for remote initiated unidirectional streams.                                     |
 | Stream Receive Buffer              | uint32_t   | StreamRecvBufferDefault     |             4,096 | Stream initial buffer size.                                                                                                   |
 | Flow Control Window                | uint32_t   | ConnFlowControlWindow       |        16,777,216 | Connection-wide flow control window.                                                                                          |
 | Max Stateless Operations           | uint32_t   | MaxStatelessOperations      |                16 | The maximum number of stateless operations that may be queued on a worker at any one time.                                    |
@@ -61,6 +64,7 @@ The following settings are available via registry as well as via [QUIC_SETTINGS]
 | Stateless Operation Expiration     | uint16_t   | StatelessOperationExpirationMs |            100 | The time limit between operations for the same endpoint, in milliseconds.                                                     |
 | Congestion Control Algorithm       | uint16_t   | CongestionControlAlgorithm  |         0 (Cubic) | The congestion control algorithm used for the connection.                                                                     |
 | ECN                                | uint8_t    | EcnEnabled                  |         0 (FALSE) | Enable sender-side ECN support.                                                                                               |
+| Stream Multi Receive               | uint8_t    | StreamMultiReceiveEnabled   |         0 (FALSE) | Enable multi receive support                                                                                                  |
 
 The types map to registry types as follows:
   - `uint64_t` is a `REG_QWORD`.
@@ -70,11 +74,12 @@ While `REG_DWORD` can hold values larger than `uint16_t`, the administrator shou
 
 The following settings are available via registry as well as via [QUIC_VERSION_SETTINGS](./Versions.md):
 
-| Setting                           | Type       | Registry Name            | Default           | Description                                                                                                                   |
-|-----------------------------------|------------|--------------------------|-------------------|-------------------------------------------------------------------------------------------------------------------------------|
-| Acceptable Versions List          | uint32_t[] | AcceptableVersions       | Unset             | Sets the list of versions that a given server instance will use if a client sends a first flight using them. |
-| Offered Versions List             | uint32_t[] | OfferedVersions          | Unset             | Sets the list of versions that a given server instance will send in a Version Negotiation packet if it receives a first flight from an unknown version. This list will most often be equal to the Acceptable Versions list. |
-| Fully-Deployed Versions List      | uint32_t[] | FullyDeployedVersions    | Unset             | Sets the list of QUIC versions that is supported and negotiated by every single QUIC server instance in this deployment. Used to generate the AvailableVersions list in the Version Negotiation Extension Transport Parameter. |
+| Setting                           | Type       | Registry Name                | Default           | Description                                                                                                                   |
+|-----------------------------------|------------|------------------------------|-------------------|-------------------------------------------------------------------------------------------------------------------------------|
+| Acceptable Versions List          | uint32_t[] | AcceptableVersions           | Unset             | Sets the list of versions that a given server instance will use if a client sends a first flight using them. |
+| Offered Versions List             | uint32_t[] | OfferedVersions              | Unset             | Sets the list of versions that a given server instance will send in a Version Negotiation packet if it receives a first flight from an unknown version. This list will most often be equal to the Acceptable Versions list. |
+| Fully-Deployed Versions List      | uint32_t[] | FullyDeployedVersions        | Unset             | Sets the list of QUIC versions that is supported and negotiated by every single QUIC server instance in this deployment. Used to generate the AvailableVersions list in the Version Negotiation Extension Transport Parameter. |
+| Version Negotiation Ext. Enabled  | uint32_t   | VersionNegotiationExtEnabled | 0 (FALSE)         | Enables the Version Negotiation Extension. |
 
 The `uint32_t[]` type is a `REG_BINARY` blob of the versions list, with each version in little-endian format.
 
@@ -107,8 +112,10 @@ These parameters are accessed by calling [GetParam](./api/GetParam.md) or [SetPa
 | `QUIC_PARAM_GLOBAL_GLOBAL_SETTINGS`<br> 6         | QUIC_GLOBAL_SETTINGS    | Both      | Globally change global only settings.                                                                 |
 | `QUIC_PARAM_GLOBAL_VERSION_SETTINGS`<br> 7        | QUIC_VERSIONS_SETTINGS  | Both      | Globally change version settings for all subsequent connections.                                      |
 | `QUIC_PARAM_GLOBAL_LIBRARY_GIT_HASH`<br> 8        | char[64]                | Get-only  | Git hash used to build MsQuic (null terminated string)                                                |
-| `QUIC_PARAM_GLOBAL_EXECUTION_CONFIG`<br> 9        | QUIC_EXECUTION_CONFIG   | Both      | Globally configure the execution model used for QUIC. Must be set before opening registration.      |
+| `QUIC_PARAM_GLOBAL_EXECUTION_CONFIG`<br> 9        | QUIC_EXECUTION_CONFIG   | Both      | Globally configure the execution model used for QUIC. Must be set before opening registration.        |
 | `QUIC_PARAM_GLOBAL_TLS_PROVIDER`<br> 10           | QUIC_TLS_PROVIDER       | Get-Only  | The TLS provider being used by MsQuic for the TLS handshake.                                          |
+| `QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY`<br> 11    | uint8_t[]               | Set-Only  | Globally change the stateless reset key for all subsequent connections.                               |
+| `QUIC_PARAM_GLOBAL_VERSION_NEGOTIATION_ENABLED`<br> (preview) | uint8_t (BOOLEAN) | Both | Globally enable the version negotiation extension for all client and server connections. |
 
 ## Registration Parameters
 
@@ -127,6 +134,7 @@ These parameters are accessed by calling [GetParam](./api/GetParam.md) or [SetPa
 | `QUIC_PARAM_CONFIGURATION_TICKET_KEYS`<br> 1                     | QUIC_TICKET_KEY_CONFIG[]               | Set-only  | Resumption ticket encryption keys. Server-side only.                                                              |
 | `QUIC_PARAM_CONFIGURATION_VERSION_SETTINGS`<br> 2                | QUIC_VERSIONS_SETTINGS                 | Both      | Change version settings for all connections on the configuration.                                                 |
 | `QUIC_PARAM_CONFIGURATION_SCHANNEL_CREDENTIAL_ATTRIBUTE_W`<br> 3 | QUIC_SCHANNEL_CREDENTIAL_ATTRIBUTE_W   | Set-only  | Calls `SetCredentialsAttributesW` with the supplied attribute and buffer on the credential handle. Schannel-only. Only valid once the credential has been loaded.  |
+| `QUIC_PARAM_CONFIGURATION_VERSION_NEG_ENABLED`<br> (preview)     | uint8_t (BOOLEAN)                      | Both      | Enables the version negotiation extension for all client connections on the configuration. |
 
 ## Listener Parameters
 
@@ -208,6 +216,7 @@ These parameters are access by calling [GetParam](./api/GetParam.md) or [SetPara
 | `QUIC_PARAM_STREAM_IDEAL_SEND_BUFFER_SIZE`<br> 2  | uint64_t - bytes  | Get-only  | Ideal buffer size to queue to the stream. Assumes only one stream sends steadily.     |
 | `QUIC_PARAM_STREAM_PRIORITY` <br> 3               | uint16_t          | Get/Set   | Stream priority. |
 | `QUIC_PARAM_STREAM_STATISTICS` <br> 4             | QUIC_STREAM_STATISTICS | Get-only  | Stream-level statistics. |
+| `QUIC_PARAM_STREAM_RELIABLE_OFFSET` <br> 5        | uint64_t          | Get/Set   | Part of the new Reliable Reset preview feature. Sets/Gets the number of bytes a sender must send before closing SEND path.
 
 ## See Also
 

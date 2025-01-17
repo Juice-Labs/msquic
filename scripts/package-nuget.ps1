@@ -23,9 +23,6 @@ param (
     [switch]$UWP = $false,
 
     [Parameter(Mandatory = $false)]
-    [switch]$XDP = $false,
-
-    [Parameter(Mandatory = $false)]
     [switch]$ReleaseBuild = $false,
 
     [Parameter(Mandatory = $false)]
@@ -87,10 +84,7 @@ if ((Test-Path $PackagingDir)) {
 # Arm is ignored, as there are no shipping arm devices
 $Architectures = "x64","x86","arm64"
 
-if ($XDP) {
-    # XDP only supports x64
-    $Architectures = "x64"
-} elseif ($Tls -ne "schannel") {
+if ($Tls -ne "schannel") {
     # OpenSSL doesn't support arm64 currently
     $Architectures = "x64","x86"
 }
@@ -100,9 +94,6 @@ $NativeDir = Join-Path $PackagingDir "build/native"
 
 foreach ($Arch in $Architectures) {
     $BuildPath = Join-Path $PlatformDir "$($Arch)_$($Config)_$($Tls)"
-    if ($XDP -and !$GHA) {
-        $BuildPath += "_xdp"
-    }
     $LibPath = Join-Path $NativeDir "lib/$Arch"
     $BinPath = Join-Path $NativeDir "bin/$Arch"
 
@@ -121,6 +112,8 @@ foreach ($Arch in $Architectures) {
 
 $HeaderDir = Join-Path $RootDir "src/inc"
 $Headers = @(Join-Path $HeaderDir "msquic.h")
+$Headers += Join-Path $HeaderDir  "msquicp.h"
+$Headers += Join-Path $HeaderDir  "msquic.hpp"
 $Headers += Join-Path $HeaderDir  "msquic_winuser.h"
 
 $IncludePath = Join-Path $NativeDir "include"
@@ -144,10 +137,8 @@ $NugetSourceFolder = Join-Path $RootDir "src/distribution"
 
 if ($UWP) {
     $PackageName = "Microsoft.Native.Quic.MsQuic.UWP.$Tls"
-} elseif ($XDP) {
-    Copy-Item -Path (Join-Path $PSScriptRoot xdp.json) -Destination (Join-Path $PackagingDir xdp-temp.json)
-    $PackageName = "Microsoft.Native.Quic.MsQuic.XDP.$Tls"
 } else {
+    Copy-Item -Path (Join-Path $PSScriptRoot xdp.json) -Destination $PackagingDir
     $PackageName = "Microsoft.Native.Quic.MsQuic.$Tls"
 }
 
@@ -162,7 +153,7 @@ $DistDir = Join-Path $BaseArtifactsDir "dist"
 $CurrentCommitHash = Get-GitHash -RepoDir $RootDir
 $RepoRemote = Get-GitRemote -RepoDir $RootDir
 
-$Version = "2.3.0"
+$Version = "2.5.0"
 
 $BuildId = $env:BUILD_BUILDID
 if ($null -ne $BuildId) {

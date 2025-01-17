@@ -137,10 +137,10 @@ BbrBandwidthFilterOnPacketAcked(
 
         if (AckedPacket->Flags.HasLastAckedPacketInfo) {
             CXPLAT_DBG_ASSERT(AckedPacket->TotalBytesSent >= AckedPacket->LastAckedPacketInfo.TotalBytesSent);
-            CXPLAT_DBG_ASSERT(CxPlatTimeAtOrBefore32(AckedPacket->LastAckedPacketInfo.SentTime, AckedPacket->SentTime));
-            
-            uint32_t AckElapsed = 0;
-            uint32_t SendElapsed = CxPlatTimeDiff32(AckedPacket->LastAckedPacketInfo.SentTime, AckedPacket->SentTime);
+            CXPLAT_DBG_ASSERT(CxPlatTimeAtOrBefore64(AckedPacket->LastAckedPacketInfo.SentTime, AckedPacket->SentTime));
+
+            uint64_t AckElapsed = 0;
+            uint64_t SendElapsed = CxPlatTimeDiff64(AckedPacket->LastAckedPacketInfo.SentTime, AckedPacket->SentTime);
 
             if (SendElapsed) {
                 SendRate = (kMicroSecsInSec * BW_UNIT *
@@ -148,10 +148,10 @@ BbrBandwidthFilterOnPacketAcked(
                     SendElapsed);
             }
 
-            if (!CxPlatTimeAtOrBefore32(AckEvent->AdjustedAckTime, AckedPacket->LastAckedPacketInfo.AdjustedAckTime)) {
-                AckElapsed = CxPlatTimeDiff32(AckedPacket->LastAckedPacketInfo.AdjustedAckTime, AckEvent->AdjustedAckTime);
+            if (!CxPlatTimeAtOrBefore64(AckEvent->AdjustedAckTime, AckedPacket->LastAckedPacketInfo.AdjustedAckTime)) {
+                AckElapsed = CxPlatTimeDiff64(AckedPacket->LastAckedPacketInfo.AdjustedAckTime, AckEvent->AdjustedAckTime);
             } else {
-                AckElapsed = CxPlatTimeDiff32(AckedPacket->LastAckedPacketInfo.AckTime, (uint32_t)TimeNow);
+                AckElapsed = CxPlatTimeDiff64(AckedPacket->LastAckedPacketInfo.AckTime, TimeNow);
             }
 
             CXPLAT_DBG_ASSERT(AckEvent->NumTotalAckedRetransmittableBytes >= AckedPacket->LastAckedPacketInfo.TotalBytesAcked);
@@ -160,13 +160,13 @@ BbrBandwidthFilterOnPacketAcked(
                            (AckEvent->NumTotalAckedRetransmittableBytes - AckedPacket->LastAckedPacketInfo.TotalBytesAcked) /
                            AckElapsed);
             }
-        } else if (!CxPlatTimeAtOrBefore32((uint32_t)TimeNow, AckedPacket->SentTime)) {
-            CXPLAT_DBG_ASSERT(CxPlatTimeDiff32(AckedPacket->SentTime, (uint32_t)TimeNow) != 0);
+        } else if (!CxPlatTimeAtOrBefore64(TimeNow, AckedPacket->SentTime)) {
+            CXPLAT_DBG_ASSERT(CxPlatTimeDiff64(AckedPacket->SentTime, TimeNow) != 0);
             SendRate = (kMicroSecsInSec * BW_UNIT *
                         AckEvent->NumTotalAckedRetransmittableBytes /
-                        CxPlatTimeDiff32(AckedPacket->SentTime, (uint32_t)TimeNow));
+                        CxPlatTimeDiff64(AckedPacket->SentTime, TimeNow));
         }
-        
+
         if (SendRate == UINT64_MAX && AckRate == UINT64_MAX) {
             continue;
         }
@@ -175,7 +175,7 @@ BbrBandwidthFilterOnPacketAcked(
 
         QUIC_SLIDING_WINDOW_EXTREMUM_ENTRY Entry = (QUIC_SLIDING_WINDOW_EXTREMUM_ENTRY) { .Value = 0, .Time = 0 };
         QUIC_STATUS Status = QuicSlidingWindowExtremumGet(&b->WindowedMaxFilter, &Entry);
-        
+
         uint64_t PreviousMaxDeliveryRate = 0;
         if (QUIC_SUCCEEDED(Status)) {
             PreviousMaxDeliveryRate = Entry.Value;
@@ -223,7 +223,7 @@ BbrCongestionControlGetCongestionWindow(
         QuicPathGetDatagramPayloadSize(&Connection->Paths[0]);
 
     uint32_t MinCongestionWindow = kMinCwndInMss * DatagramPayloadLength;
-    
+
     if (Bbr->BbrState == BBR_STATE_PROBE_RTT) {
         return MinCongestionWindow;
     }
@@ -286,17 +286,48 @@ QuicConnLogBbr(
     QUIC_CONGESTION_CONTROL_BBR* Bbr = &Cc->Bbr;
 
     QuicTraceEvent(
-            ConnBbr,
-            "[conn][%p] BBR: State=%u RState=%u CongestionWindow=%u BytesInFlight=%u BytesInFlightMax=%u MinRttEst=%lu EstBw=%lu AppLimited=%u",
-            Connection,
-            Bbr->BbrState,
-            Bbr->RecoveryState,
-            BbrCongestionControlGetCongestionWindow(Cc),
-            Bbr->BytesInFlight,
-            Bbr->BytesInFlightMax,
-            Bbr->MinRtt,
-            BbrCongestionControlGetBandwidth(Cc) / BW_UNIT,
-            BbrCongestionControlIsAppLimited(Cc));
+        ConnBbr,
+        "[conn][%p] BBR: State=%u RState=%u CongestionWindow=%u BytesInFlight=%u BytesInFlightMax=%u MinRttEst=%lu EstBw=%lu AppLimited=%u",
+        Connection,
+        Bbr->BbrState,
+        Bbr->RecoveryState,
+        BbrCongestionControlGetCongestionWindow(Cc),
+        Bbr->BytesInFlight,
+        Bbr->BytesInFlightMax,
+        Bbr->MinRtt,
+        BbrCongestionControlGetBandwidth(Cc) / BW_UNIT,
+        BbrCongestionControlIsAppLimited(Cc));
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+BbrCongestionControlIndicateConnectionEvent(
+    _In_ QUIC_CONNECTION* const Connection,
+    _In_ const QUIC_CONGESTION_CONTROL* Cc
+    )
+{
+    const QUIC_CONGESTION_CONTROL_BBR* Bbr = &Cc->Bbr;
+    const QUIC_PATH* Path = &Connection->Paths[0];
+    QUIC_CONNECTION_EVENT Event;
+    Event.Type = QUIC_CONNECTION_EVENT_NETWORK_STATISTICS;
+    Event.NETWORK_STATISTICS.BytesInFlight = Bbr->BytesInFlight;
+    Event.NETWORK_STATISTICS.PostedBytes = Connection->SendBuffer.PostedBytes;
+    Event.NETWORK_STATISTICS.IdealBytes = Connection->SendBuffer.IdealBytes;
+    Event.NETWORK_STATISTICS.SmoothedRTT = Path->SmoothedRtt;
+    Event.NETWORK_STATISTICS.CongestionWindow = BbrCongestionControlGetCongestionWindow(Cc);
+    Event.NETWORK_STATISTICS.Bandwidth = BbrCongestionControlGetBandwidth(Cc) / BW_UNIT;
+
+    QuicTraceLogConnVerbose(
+        IndicateDataAcked,
+        Connection,
+        "Indicating QUIC_CONNECTION_EVENT_NETWORK_STATISTICS [BytesInFlight=%u,PostedBytes=%llu,IdealBytes=%llu,SmoothedRTT=%llu,CongestionWindow=%u,Bandwidth=%llu]",
+        Event.NETWORK_STATISTICS.BytesInFlight,
+        Event.NETWORK_STATISTICS.PostedBytes,
+        Event.NETWORK_STATISTICS.IdealBytes,
+        Event.NETWORK_STATISTICS.SmoothedRTT,
+        Event.NETWORK_STATISTICS.CongestionWindow,
+        Event.NETWORK_STATISTICS.Bandwidth);
+    QuicConnIndicateEvent(Connection, &Event);
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -319,18 +350,17 @@ BbrCongestionControlLogOutFlowStatus(
     const QUIC_CONGESTION_CONTROL_BBR* Bbr = &Cc->Bbr;
 
     QuicTraceEvent(
-            ConnOutFlowStats,
-            "[conn][%p] OUT: BytesSent=%llu InFlight=%u InFlightMax=%u CWnd=%u SSThresh=%u ConnFC=%llu ISB=%llu PostedBytes=%llu SRtt=%u",
-            Connection,
-            Connection->Stats.Send.TotalBytes,
-            Bbr->BytesInFlight,
-            Bbr->BytesInFlightMax,
-            Bbr->CongestionWindow,
-            0,
-            Connection->Send.PeerMaxData - Connection->Send.OrderedStreamBytesSent,
-            Connection->SendBuffer.IdealBytes,
-            Connection->SendBuffer.PostedBytes,
-            Path->GotFirstRttSample ? Path->SmoothedRtt : 0);
+        ConnOutFlowStatsV2,
+        "[conn][%p] OUT: BytesSent=%llu InFlight=%u CWnd=%u ConnFC=%llu ISB=%llu PostedBytes=%llu SRtt=%llu 1Way=%llu",
+        Connection,
+        Connection->Stats.Send.TotalBytes,
+        Bbr->BytesInFlight,
+        Bbr->CongestionWindow,
+        Connection->Send.PeerMaxData - Connection->Send.OrderedStreamBytesSent,
+        Connection->SendBuffer.IdealBytes,
+        Connection->SendBuffer.PostedBytes,
+        Path->GotFirstRttSample ? Path->SmoothedRtt : 0,
+        Path->OneWayDelay);
 }
 
 //
@@ -451,7 +481,7 @@ BbrCongestionControlUpdateRecoveryWindow(
     if (Bbr->RecoveryState == RECOVERY_STATE_GROWTH) {
         Bbr->RecoveryWindow += BytesAcked;
     }
-    
+
     uint32_t RecoveryWindow = CXPLAT_MAX(
         Bbr->RecoveryWindow, Bbr->BytesInFlight + BytesAcked);
 
@@ -596,7 +626,7 @@ BbrCongestionControlGetSendAllowance(
         !TimeSinceLastSendValid ||
         !Connection->Settings.PacingEnabled ||
         Bbr->MinRtt == UINT32_MAX ||
-        Bbr->MinRtt < MS_TO_US(QUIC_SEND_PACING_INTERVAL)) {
+        Bbr->MinRtt < QUIC_SEND_PACING_INTERVAL) {
         //
         // We're not in the necessary state to pace.
         //
@@ -709,7 +739,7 @@ BbrCongestionControlUpdateCongestionWindow(
             TargetCwnd += Entry.Value;
         }
     }
-    
+
     uint32_t CongestionWindow = Bbr->CongestionWindow;
     uint32_t MinCongestionWindow = kMinCwndInMss * DatagramPayloadLength;
 
@@ -740,6 +770,9 @@ BbrCongestionControlOnDataAcknowledged(
         BbrCongestionControlUpdateCongestionWindow(
             Cc, AckEvent->NumTotalAckedRetransmittableBytes, AckEvent->NumRetransmittableBytes);
 
+        if (Connection->Settings.NetStatsEventEnabled) {
+            BbrCongestionControlIndicateConnectionEvent(Connection, Cc);
+        }
         return BbrCongestionControlUpdateBlockedState(Cc, PreviousCanSendState);
     }
 
@@ -849,6 +882,10 @@ BbrCongestionControlOnDataAcknowledged(
     BbrCongestionControlUpdateCongestionWindow(
         Cc, AckEvent->NumTotalAckedRetransmittableBytes, AckEvent->NumRetransmittableBytes);
 
+    if (Connection->Settings.NetStatsEventEnabled) {
+        BbrCongestionControlIndicateConnectionEvent(Connection, Cc);
+    }
+
     return BbrCongestionControlUpdateBlockedState(Cc, PreviousCanSendState);
 }
 
@@ -873,7 +910,7 @@ BbrCongestionControlOnDataLost(
     Connection->Stats.Send.CongestionCount++;
 
     BOOLEAN PreviousCanSendState = BbrCongestionControlCanSend(Cc);
-    
+
     CXPLAT_DBG_ASSERT(LossEvent->NumRetransmittableBytes > 0);
 
     Bbr->EndOfRecoveryValid = TRUE;
@@ -881,7 +918,7 @@ BbrCongestionControlOnDataLost(
 
     CXPLAT_DBG_ASSERT(Bbr->BytesInFlight >= LossEvent->NumRetransmittableBytes);
     Bbr->BytesInFlight -= LossEvent->NumRetransmittableBytes;
-    
+
     uint32_t RecoveryWindow = Bbr->RecoveryWindow;
     uint32_t MinCongestionWindow = kMinCwndInMss * DatagramPayloadLength;
 
@@ -931,7 +968,7 @@ BbrCongestionControlSetAppLimited(
     )
 {
     QUIC_CONGESTION_CONTROL_BBR *Bbr = &Cc->Bbr;
-    
+
     QUIC_CONNECTION* Connection = QuicCongestionControlGetConnection(Cc);
     uint64_t LargestSentPacketNumber = Connection->LossDetection.LargestSentPacketNumber;
 
@@ -999,7 +1036,7 @@ BbrCongestionControlReset(
 
     Bbr->RttSampleExpired = TRUE;
     Bbr->MinRttTimestampValid = FALSE;
-    Bbr->MinRtt = UINT32_MAX;
+    Bbr->MinRtt = UINT64_MAX;
     Bbr->MinRttTimestamp = 0;
 
     QuicSlidingWindowExtremumReset(&Bbr->MaxAckHeightFilter);
@@ -1079,7 +1116,7 @@ BbrCongestionControlInitialize(
 
     Bbr->EndOfRecoveryValid = FALSE;
     Bbr->EndOfRecovery = 0;
-    
+
     Bbr->ProbeRttRoundValid = FALSE;
     Bbr->ProbeRttRound = 0;
 
@@ -1091,7 +1128,7 @@ BbrCongestionControlInitialize(
 
     Bbr->RttSampleExpired = TRUE;
     Bbr->MinRttTimestampValid = FALSE;
-    Bbr->MinRtt = UINT32_MAX;
+    Bbr->MinRtt = UINT64_MAX;
     Bbr->MinRttTimestamp = 0;
 
     Bbr->MaxAckHeightFilter = QuicSlidingWindowExtremumInitialize(

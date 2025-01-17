@@ -387,6 +387,7 @@ QuicSendSetStreamSendFlag(
     if (Stream->Flags.LocalCloseAcked) {
         SendFlags &=
             ~(QUIC_STREAM_SEND_FLAG_SEND_ABORT |
+              QUIC_STREAM_SEND_FLAG_RELIABLE_ABORT |
               QUIC_STREAM_SEND_FLAG_DATA_BLOCKED |
               QUIC_STREAM_SEND_FLAG_DATA |
               QUIC_STREAM_SEND_FLAG_OPEN |
@@ -515,8 +516,7 @@ QuicSendWriteFrames(
         }
     }
 
-    if ((Send->SendFlags & QUIC_CONN_SEND_FLAG_CONNECTION_CLOSE) ||
-        ((Send->SendFlags & QUIC_CONN_SEND_FLAG_APPLICATION_CLOSE) && Is1RttEncryptionLevel)) {
+    if (Send->SendFlags & (QUIC_CONN_SEND_FLAG_CONNECTION_CLOSE | QUIC_CONN_SEND_FLAG_APPLICATION_CLOSE)) {
         BOOLEAN IsApplicationClose =
             !!(Send->SendFlags & QUIC_CONN_SEND_FLAG_APPLICATION_CLOSE);
         if (Connection->State.ClosedRemotely) {
@@ -528,12 +528,28 @@ QuicSendWriteFrames(
             IsApplicationClose = FALSE;
         }
 
+        QUIC_VAR_INT CloseErrorCode = Connection->CloseErrorCode;
+        char* CloseReasonPhrase = Connection->CloseReasonPhrase;
+
+        if (IsApplicationClose && ! Is1RttEncryptionLevel) {
+            //
+            // A CONNECTION_CLOSE of type 0x1d MUST be replaced by a CONNECTION_CLOSE of
+            // type 0x1c when sending the frame in Initial or Handshake packets. Otherwise,
+            // information about the application state might be revealed. Endpoints MUST
+            // clear the value of the Reason Phrase field and SHOULD use the APPLICATION_ERROR
+            // code when converting to a CONNECTION_CLOSE of type 0x1c.
+            //
+            CloseErrorCode = QUIC_ERROR_APPLICATION_ERROR;
+            CloseReasonPhrase = NULL;
+            IsApplicationClose = FALSE;
+        }
+
         QUIC_CONNECTION_CLOSE_EX Frame = {
             IsApplicationClose,
-            Connection->State.ClosedRemotely ? 0 : Connection->CloseErrorCode,
+            CloseErrorCode,
             0, // TODO - Set the FrameType field.
-            Connection->CloseReasonPhrase == NULL ? 0 : strlen(Connection->CloseReasonPhrase),
-            Connection->CloseReasonPhrase
+            CloseReasonPhrase == NULL ? 0 : strlen(CloseReasonPhrase),
+            CloseReasonPhrase
         };
 
         if (QuicConnCloseFrameEncode(
@@ -542,7 +558,17 @@ QuicSendWriteFrames(
                 AvailableBufferLength,
                 Builder->Datagram->Buffer)) {
 
-            Send->SendFlags &= ~(QUIC_CONN_SEND_FLAG_CONNECTION_CLOSE | QUIC_CONN_SEND_FLAG_APPLICATION_CLOSE);
+            Builder->WrittenConnectionCloseFrame = TRUE;
+
+            //
+            // We potentially send the close frame on multiple protection levels.
+            // We send in increasing encryption level so clear the flag only once
+            // we send on the current protection level.
+            //
+            if (Builder->Key->Type == Connection->Crypto.TlsState.WriteKey) {
+                Send->SendFlags &= ~(QUIC_CONN_SEND_FLAG_CONNECTION_CLOSE | QUIC_CONN_SEND_FLAG_APPLICATION_CLOSE);
+            }
+
             (void)QuicPacketBuilderAddFrame(
                 Builder, IsApplicationClose ? QUIC_FRAME_CONNECTION_CLOSE_1 : QUIC_FRAME_CONNECTION_CLOSE, FALSE);
         } else {
@@ -868,13 +894,9 @@ QuicSendWriteFrames(
 
             QUIC_ACK_FREQUENCY_EX Frame;
             Frame.SequenceNumber = Connection->SendAckFreqSeqNum;
-            Frame.PacketTolerance = Connection->PeerPacketTolerance;
-            Frame.UpdateMaxAckDelay =
-                MS_TO_US(
-                    (uint64_t)Connection->Settings.MaxAckDelayMs +
-                    (uint64_t)MsQuicLib.TimerResolutionMs);
-            Frame.IgnoreOrder = FALSE;
-            Frame.IgnoreCE = FALSE;
+            Frame.AckElicitingThreshold = Connection->PeerPacketTolerance;
+            Frame.RequestedMaxAckDelay = MS_TO_US(QuicConnGetAckDelay(Connection));
+            Frame.ReorderingThreshold = Connection->PeerReorderingThreshold;
 
             if (QuicAckFrequencyFrameEncode(
                     &Frame,
@@ -1035,7 +1057,6 @@ CxPlatIsRouteReady(
     // We need to set the path challenge flag back on so that when route is resolved,
     // we know we need to continue to send the challenge.
     //
-    CXPLAT_DBG_ASSERT(Path->IsActive);
     if (Path->Route.State == RouteUnresolved || Path->Route.State == RouteSuspected) {
         QuicConnAddRef(Connection, QUIC_CONN_REF_ROUTE);
         QUIC_STATUS Status =
@@ -1238,7 +1259,7 @@ QuicSendFlush(
                     "ECN unknown.");
             }
         } else {
-            uint32_t ThreePtosInUs =
+            uint64_t ThreePtosInUs =
                 QuicLossDetectionComputeProbeTimeout(
                     &Connection->LossDetection,
                     &Connection->Paths[0],
@@ -1461,7 +1482,7 @@ QuicSendFlush(
             // We're scheduling limited, so we should tell the peer to use our
             // (max) batch size + 1 as the peer tolerance as a hint that they
             // should expect more than a single batch before needing to send an
-            // acknowledgement back.
+            // acknowledgment back.
             //
             QuicConnUpdatePeerPacketTolerance(Connection, Builder.TotalCountDatagrams + 1);
         }
@@ -1476,6 +1497,11 @@ QuicSendFlush(
         //QuicConnUpdatePeerPacketTolerance(Connection, Builder.TotalCountDatagrams);
     }
 
+    //
+    // Clears the SendQueue list of not sent packets if the flag is applied
+    //
+    QuicDatagramCancelBlocked(Connection);
+
     return Result != QUIC_SEND_INCOMPLETE;
 }
 #pragma warning(pop)
@@ -1488,6 +1514,7 @@ QuicSendStartDelayedAckTimer(
 {
     QUIC_CONNECTION* Connection = QuicSendGetConnection(Send);
 
+    CXPLAT_DBG_ASSERT(Connection->Settings.MaxAckDelayMs != 0);
     if (!Send->DelayedAckTimerActive &&
         !(Send->SendFlags & QUIC_CONN_SEND_FLAG_ACK) &&
         !Connection->State.ClosedLocally &&

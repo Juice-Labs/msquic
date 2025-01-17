@@ -319,14 +319,15 @@ struct StatelessRetryHelper
 
 #define PRIVATE_TP_TYPE   77
 #define PRIVATE_TP_LENGTH 2345
+#define PRIVATE_TP_LENGTH_HUGE 4134
 
 struct PrivateTransportHelper : QUIC_PRIVATE_TRANSPORT_PARAMETER
 {
-    PrivateTransportHelper(bool Enabled) {
+    PrivateTransportHelper(bool Enabled, bool Resumption = false) {
         if (Enabled) {
             Type = PRIVATE_TP_TYPE;
-            Length = PRIVATE_TP_LENGTH;
-            Buffer = new(std::nothrow) uint8_t[PRIVATE_TP_LENGTH];
+            Length = Resumption ? PRIVATE_TP_LENGTH : PRIVATE_TP_LENGTH_HUGE;
+            Buffer = new(std::nothrow) uint8_t[Length];
             TEST_TRUE(Buffer != nullptr);
         } else {
             Buffer = nullptr;
@@ -685,6 +686,35 @@ struct SelectiveLossHelper : public DatapathHook
             "[test][hook] Selective packet drop");
         DropPacketCount--;
         return TRUE;
+    }
+};
+
+struct NthLossHelper : public DatapathHook
+{
+    uint32_t DropPacketIndex;
+    NthLossHelper(uint32_t Index = UINT32_MAX) : DropPacketIndex(Index) {
+        DatapathHooks::Instance->AddHook(this);
+    }
+    ~NthLossHelper() {
+        DatapathHooks::Instance->RemoveHook(this);
+    }
+    void DropIndex(uint32_t Index) { DropPacketIndex = Index; }
+    bool Dropped() { return DropPacketIndex == UINT32_MAX; }
+    _IRQL_requires_max_(DISPATCH_LEVEL)
+    BOOLEAN
+    Receive(
+        _Inout_ struct CXPLAT_RECV_DATA* /* Datagram */
+        ) {
+        if (DropPacketIndex == UINT32_MAX) { return FALSE; }
+        if (DropPacketIndex == 0) {
+            DropPacketIndex = UINT32_MAX;
+            QuicTraceLogVerbose(
+                TestHookDropPacketNth,
+                "[test][hook] Nth packet drop");
+            return TRUE;
+        }
+        --DropPacketIndex;
+        return FALSE;
     }
 };
 

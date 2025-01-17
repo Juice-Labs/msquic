@@ -14,30 +14,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathRecvEmpty,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
-    )
-)
-
-
-
-/*----------------------------------------------------------
-// Decoder Ring for DatapathResolveHostNameFailed
-// [%p] Couldn't resolve hostname '%s' to an IP address
-// QuicTraceLogError(
-        DatapathResolveHostNameFailed,
-        "[%p] Couldn't resolve hostname '%s' to an IP address",
-        Datapath,
-        HostName);
-// arg2 = arg2 = Datapath = arg2
-// arg3 = arg3 = HostName = arg3
-----------------------------------------------------------*/
-TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathResolveHostNameFailed,
-    TP_ARGS(
-        const void *, arg2,
-        const char *, arg3), 
-    TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
-        ctf_string(arg3, arg3)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -67,29 +44,6 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, AllocFailure,
 
 
 /*----------------------------------------------------------
-// Decoder Ring for LibraryErrorStatus
-// [ lib] ERROR, %u, %s.
-// QuicTraceEvent(
-        LibraryErrorStatus,
-        "[ lib] ERROR, %u, %s.",
-        (uint32_t)Result,
-        "Resolving hostname to IP");
-// arg2 = arg2 = (uint32_t)Result = arg2
-// arg3 = arg3 = "Resolving hostname to IP" = arg3
-----------------------------------------------------------*/
-TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, LibraryErrorStatus,
-    TP_ARGS(
-        unsigned int, arg2,
-        const char *, arg3), 
-    TP_FIELDS(
-        ctf_integer(unsigned int, arg2, arg2)
-        ctf_string(arg3, arg3)
-    )
-)
-
-
-
-/*----------------------------------------------------------
 // Decoder Ring for DatapathErrorStatus
 // [data][%p] ERROR, %u, %s.
 // QuicTraceEvent(
@@ -108,7 +62,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathErrorStatus,
         unsigned int, arg3,
         const char *, arg4), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3, arg3)
         ctf_string(arg4, arg4)
     )
@@ -137,7 +91,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathCreated,
         unsigned int, arg4_len,
         const void *, arg4), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3_len, arg3_len)
         ctf_sequence(char, arg3, arg3, unsigned int, arg3_len)
         ctf_integer(unsigned int, arg4_len, arg4_len)
@@ -160,7 +114,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathDestroyed,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -193,7 +147,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathRecv,
         unsigned int, arg6_len,
         const void *, arg6), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3, arg3)
         ctf_integer(unsigned short, arg4, arg4)
         ctf_integer(unsigned int, arg5_len, arg5_len)
@@ -235,7 +189,7 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathSend,
         unsigned int, arg7_len,
         const void *, arg7), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned int, arg3, arg3)
         ctf_integer(unsigned char, arg4, arg4)
         ctf_integer(unsigned short, arg5, arg5)
@@ -243,5 +197,24 @@ TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, DatapathSend,
         ctf_sequence(char, arg6, arg6, unsigned int, arg6_len)
         ctf_integer(unsigned int, arg7_len, arg7_len)
         ctf_sequence(char, arg7, arg7, unsigned int, arg7_len)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for LibraryError
+// [ lib] ERROR, %s.
+// QuicTraceEvent(
+                    LibraryError,
+                    "[ lib] ERROR, %s.",
+                    "Disabling segmentation support globally");
+// arg2 = arg2 = "Disabling segmentation support globally" = arg2
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_DATAPATH_EPOLL_C, LibraryError,
+    TP_ARGS(
+        const char *, arg2), 
+    TP_FIELDS(
+        ctf_string(arg2, arg2)
     )
 )

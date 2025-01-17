@@ -12,7 +12,7 @@ namespace QuicTrace.DataModel
     {
         public static QuicStream New(ulong pointer, uint processId) => new QuicStream(pointer, processId);
 
-        public static ushort CreateEventId => (ushort)QuicEventId.StreamCreated;
+        public static ushort CreateEventId => (ushort)QuicEventId.StreamAlloc;
 
         public static ushort DestroyedEventId => (ushort)QuicEventId.StreamDestroyed;
 
@@ -112,7 +112,7 @@ namespace QuicTrace.DataModel
                 case QuicEventId.StreamSendState:
                     {
                         var sendState = (evt as QuicStreamSendStateEvent)!.SendState;
-                        if (sendState == QuicSendState.Disabled || sendState == QuicSendState.FinAcked || sendState == QuicSendState.ResetAcked)
+                        if (sendState == QuicSendState.Disabled || sendState == QuicSendState.FinAcked || sendState == QuicSendState.ResetAcked || sendState == QuicSendState.ReliableResetAcked)
                         {
                             Timings.SendShutdown = true;
                             if (Timings.RecvShutdown && Timings.State == QuicStreamState.IdleBoth)
@@ -125,7 +125,7 @@ namespace QuicTrace.DataModel
                 case QuicEventId.StreamRecvState:
                     {
                         var recvState = (evt as QuicStreamRecvStateEvent)!.ReceiveState;
-                        if (recvState == QuicReceiveState.Disabled || recvState == QuicReceiveState.Fin || recvState == QuicReceiveState.Reset)
+                        if (recvState == QuicReceiveState.Disabled || recvState == QuicReceiveState.Fin || recvState == QuicReceiveState.Reset || recvState == QuicReceiveState.ReliableReset)
                         {
                             Timings.RecvShutdown = true;
                             if (Timings.SendShutdown && Timings.State == QuicStreamState.IdleBoth)
@@ -151,6 +151,7 @@ namespace QuicTrace.DataModel
                         Timings.SendPacket = state.SendPacketSet.FindActive(new QuicObjectKey(evt.PointerSize, (evt as QuicStreamWriteFramesEvent)!.ID, evt.ProcessId));
                         if (Timings.SendPacket == null)
                         {
+                            //Console.WriteLine("No SendPacket Error!");
                             Timings.EncounteredError = true;
                             break;
                         }
@@ -188,6 +189,7 @@ namespace QuicTrace.DataModel
                         Timings.RecvPacket = state.ReceivePacketSet.FindActive(new QuicObjectKey(evt.PointerSize, (evt as QuicStreamReceiveFrameEvent)!.ID, evt.ProcessId));
                         if (Timings.RecvPacket == null)
                         {
+                            //Console.WriteLine("No RecvPacket Error!");
                             Timings.EncounteredError = true;
                             break;
                         }
@@ -216,6 +218,18 @@ namespace QuicTrace.DataModel
                                     Timings.UpdateToState(QuicStreamState.ReadOther, Timings.RecvPacket.PacketDecryptComplete);
                                 }
                             }
+                        }
+
+                        if (InitialTimeStamp > Timings.RecvPacket.PacketReceive && !Timings.IsAllocated)
+                        {
+                            // Stream was created after packet recieved
+                            Timings.UpdateToState(QuicStreamState.Alloc, InitialTimeStamp);
+                        }
+
+                        if (FinalTimeStamp > Timings.LastStateChangeTime)
+                        {
+                            // Other events between Decrypt and StreamReceiveFrame
+                            Timings.UpdateToState(QuicStreamState.ProcessRecv, FinalTimeStamp);
                         }
 
                         Timings.UpdateToState(QuicStreamState.Read, evt.TimeStamp);

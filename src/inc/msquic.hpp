@@ -10,6 +10,10 @@ Abstract:
 
     For more detailed information, see ../docs/API.md
 
+    NOTE! This header file not guaranteed to remain binary compatible between
+    releases. It is included here for convenience only. For a stable interface
+    use msquic.h.
+
 Supported Platforms:
 
     Windows User mode
@@ -18,7 +22,12 @@ Supported Platforms:
 
 --*/
 
+#ifdef _WIN32
 #pragma once
+#endif
+
+#ifndef _MSQUIC_HPP_
+#define _MSQUIC_HPP_
 
 #include "msquic.h"
 #include "msquicp.h"
@@ -52,6 +61,15 @@ struct CxPlatEvent {
     bool WaitTimeout(uint32_t TimeoutMs) { return CxPlatEventWaitWithTimeout(Handle, TimeoutMs); }
 };
 
+struct CxPlatRundown {
+    CXPLAT_RUNDOWN_REF Ref;
+    CxPlatRundown() noexcept { CxPlatRundownInitialize(&Ref); }
+    ~CxPlatRundown() noexcept { CxPlatRundownUninitialize(&Ref); }
+    bool Acquire() noexcept { return CxPlatRundownAcquire(&Ref); }
+    void Release() noexcept { CxPlatRundownRelease(&Ref); }
+    void ReleaseAndWait() { CxPlatRundownReleaseAndWait(&Ref); }
+};
+
 struct CxPlatLock {
     CXPLAT_LOCK Handle;
     CxPlatLock() noexcept { CxPlatLockInitialize(&Handle); }
@@ -59,6 +77,17 @@ struct CxPlatLock {
     void Acquire() noexcept { CxPlatLockAcquire(&Handle); }
     void Release() noexcept { CxPlatLockRelease(&Handle); }
 };
+
+#pragma warning(push)
+#pragma warning(disable:28167) // TODO - Fix SAL annotations for IRQL changes
+struct CxPlatLockDispatch {
+    CXPLAT_DISPATCH_LOCK Handle;
+    CxPlatLockDispatch() noexcept { CxPlatDispatchLockInitialize(&Handle); }
+    ~CxPlatLockDispatch() noexcept { CxPlatDispatchLockUninitialize(&Handle); }
+    void Acquire() noexcept { CxPlatDispatchLockAcquire(&Handle); }
+    void Release() noexcept { CxPlatDispatchLockRelease(&Handle); }
+};
+#pragma warning(pop)
 
 struct CxPlatPool {
     CXPLAT_POOL Handle;
@@ -68,20 +97,59 @@ struct CxPlatPool {
     void Free(void* Ptr) noexcept { CxPlatPoolFree(&Handle, Ptr); }
 };
 
+//
+// Implementation of std::forward, to allow use in kernel mode.
+// Based on reference implementation in MSVC's STL.
+//
+
+template <class _Ty>
+struct CxPlatRemoveReference {
+    using type                 = _Ty;
+    using _Const_thru_ref_type = const _Ty;
+};
+
+template <class _Ty>
+using CxPlatRemoveReferenceT = typename CxPlatRemoveReference<_Ty>::type;
+
+template <class _Ty>
+constexpr _Ty&& CxPlatForward(
+    CxPlatRemoveReferenceT<_Ty>& _Arg) noexcept { // forward an lvalue as either an lvalue or an rvalue
+    return static_cast<_Ty&&>(_Arg);
+}
+
+template<typename T, uint32_t Tag = 'lPxC', bool Paged = false>
+class CxPlatPoolT {
+    CXPLAT_POOL Pool;
+public:
+    CxPlatPoolT() noexcept { CxPlatPoolInitialize(Paged, sizeof(T), Tag, &Pool); }
+    ~CxPlatPoolT() noexcept { CxPlatPoolUninitialize(&Pool); }
+    template <class... Args>
+    T* Alloc(Args&&... args) noexcept {
+        void* Raw = CxPlatPoolAlloc(&Pool);
+        return Raw ? new (Raw) T (CxPlatForward<Args>(args)...) : nullptr;
+    }
+    void Free(T* Obj) noexcept {
+        if (Obj != nullptr) {
+            Obj->~T();
+            CxPlatPoolFree(&Pool, Obj);
+        }
+    }
+};
+
 #ifdef CXPLAT_HASH_MIN_SIZE
 
-struct HashTable {
+struct CxPlatHashTable {
     bool Initialized;
     CXPLAT_HASHTABLE Table;
-    HashTable() noexcept { Initialized = CxPlatHashtableInitializeEx(&Table, CXPLAT_HASH_MIN_SIZE); }
-    ~HashTable() noexcept { if (Initialized) { CxPlatHashtableUninitialize(&Table); } }
-    void Insert(CXPLAT_HASHTABLE_ENTRY* Entry) { CxPlatHashtableInsert(&Table, Entry, Entry->Signature, nullptr); }
-    void Remove(CXPLAT_HASHTABLE_ENTRY* Entry) { CxPlatHashtableRemove(&Table, Entry, nullptr); }
-    CXPLAT_HASHTABLE_ENTRY* Lookup(uint64_t Signature) {
+    CxPlatHashTable() noexcept { Initialized = CxPlatHashtableInitializeEx(&Table, CXPLAT_HASH_MIN_SIZE); }
+    ~CxPlatHashTable() noexcept { if (Initialized) { CxPlatHashtableUninitialize(&Table); } }
+    void Insert(CXPLAT_HASHTABLE_ENTRY* Entry) noexcept { CxPlatHashtableInsert(&Table, Entry, Entry->Signature, nullptr); }
+    void Remove(CXPLAT_HASHTABLE_ENTRY* Entry) noexcept { CxPlatHashtableRemove(&Table, Entry, nullptr); }
+    CXPLAT_HASHTABLE_ENTRY* Lookup(uint64_t Signature) noexcept {
         CXPLAT_HASHTABLE_LOOKUP_CONTEXT LookupContext;
         return CxPlatHashtableLookup(&Table, Signature, &LookupContext);
     }
-    CXPLAT_HASHTABLE_ENTRY* LookupEx(uint64_t Signature, bool (*Equals)(CXPLAT_HASHTABLE_ENTRY* Entry, void* Context), void* Context) {
+    CXPLAT_HASHTABLE_ENTRY* LookupEx(uint64_t Signature, bool (*Equals)(CXPLAT_HASHTABLE_ENTRY* Entry, void* Context), void* Context) noexcept {
         CXPLAT_HASHTABLE_LOOKUP_CONTEXT LookupContext;
         CXPLAT_HASHTABLE_ENTRY* Entry = CxPlatHashtableLookup(&Table, Signature, &LookupContext);
         while (Entry != NULL) {
@@ -90,36 +158,84 @@ struct HashTable {
         }
         return NULL;
     }
+    void EnumBegin(CXPLAT_HASHTABLE_ENUMERATOR* Enumerator) noexcept {
+        CxPlatHashtableEnumerateBegin(&Table, Enumerator);
+    }
+    void EnumEnd(CXPLAT_HASHTABLE_ENUMERATOR* Enumerator) noexcept {
+        CxPlatHashtableEnumerateEnd(&Table, Enumerator);
+    }
+    CXPLAT_HASHTABLE_ENTRY* EnumNext(CXPLAT_HASHTABLE_ENUMERATOR* Enumerator) noexcept {
+        return CxPlatHashtableEnumerateNext(&Table, Enumerator);
+    }
 };
 
 #endif // CXPLAT_HASH_MIN_SIZE
 
+class CxPlatThread {
+    CXPLAT_THREAD Thread {0};
+    bool Initialized : 1;
+    bool WaitOnDelete : 1;
+public:
+    CxPlatThread(bool WaitOnDelete = true) noexcept : Initialized(false), WaitOnDelete(WaitOnDelete) { }
+    ~CxPlatThread() noexcept {
+        if (Initialized) {
+            if (WaitOnDelete) {
+                CxPlatThreadWait(&Thread);
+            }
+            CxPlatThreadDelete(&Thread);
+        }
+    }
+    QUIC_STATUS Create(CXPLAT_THREAD_CONFIG* Config) noexcept {
+        auto Status = CxPlatThreadCreate(Config, &Thread);
+        if (QUIC_SUCCEEDED(Status)) {
+            Initialized = true;
+        }
+        return Status;
+    }
+    void Wait() noexcept {
+        if (Initialized) {
+            CxPlatThreadWait(&Thread);
+        }
+    }
+};
+
 #ifdef CXPLAT_FRE_ASSERT
 
+#ifndef _KERNEL_MODE
+#include <stdio.h> // For printf below
+#endif
+
 class CxPlatWatchdog {
-    CXPLAT_THREAD WatchdogThread;
     CxPlatEvent ShutdownEvent {true};
+    CxPlatThread WatchdogThread;
     uint32_t TimeoutMs;
+    bool WriteToConsole;
     static CXPLAT_THREAD_CALLBACK(WatchdogThreadCallback, Context) {
         auto This = (CxPlatWatchdog*)Context;
         if (!This->ShutdownEvent.WaitTimeout(This->TimeoutMs)) {
+#ifndef _KERNEL_MODE // Not supported in kernel mode
+            if (This->WriteToConsole) {
+                printf("Error: Watchdog timeout fired!\n");
+            }
+#endif
             CXPLAT_FRE_ASSERTMSG(FALSE, "Watchdog timeout fired!");
         }
         CXPLAT_THREAD_RETURN(0);
     }
 public:
-    CxPlatWatchdog(uint32_t WatchdogTimeoutMs) : TimeoutMs(WatchdogTimeoutMs) {
+    CxPlatWatchdog(uint32_t WatchdogTimeoutMs, const char* Name = "cxplat_watchdog", bool WriteToConsole = false) noexcept
+        : TimeoutMs(WatchdogTimeoutMs), WriteToConsole(WriteToConsole) {
         CXPLAT_THREAD_CONFIG Config;
         memset(&Config, 0, sizeof(CXPLAT_THREAD_CONFIG));
-        Config.Name = "cxplat_watchdog";
+        Config.Name = Name;
         Config.Callback = WatchdogThreadCallback;
         Config.Context = this;
-        CXPLAT_FRE_ASSERT(QUIC_SUCCEEDED(CxPlatThreadCreate(&Config, &WatchdogThread)));
+        if (WatchdogTimeoutMs != UINT32_MAX) {
+            CXPLAT_FRE_ASSERT(QUIC_SUCCEEDED(WatchdogThread.Create(&Config)));
+        }
     }
-    ~CxPlatWatchdog() {
+    ~CxPlatWatchdog() noexcept {
         ShutdownEvent.Set();
-        CxPlatThreadWait(&WatchdogThread);
-        CxPlatThreadDelete(&WatchdogThread);
     }
 };
 
@@ -291,18 +407,21 @@ public:
 };
 
 class MsQuicApi : public QUIC_API_TABLE {
-    const QUIC_API_TABLE* ApiTable {nullptr};
-    QUIC_STATUS InitStatus;
+    const void* ApiTable {nullptr};
+    QUIC_STATUS InitStatus {QUIC_STATUS_INVALID_STATE};
+    const MsQuicCloseFn CloseFn {nullptr};
 public:
-    MsQuicApi() noexcept {
-        if (QUIC_SUCCEEDED(InitStatus = MsQuicOpen2(&ApiTable))) {
+    MsQuicApi(
+        MsQuicOpenVersionFn _OpenFn = MsQuicOpenVersion,
+        MsQuicCloseFn _CloseFn = MsQuicClose) noexcept : CloseFn(_CloseFn) {
+        if (QUIC_SUCCEEDED(InitStatus = _OpenFn(QUIC_API_VERSION_2, &ApiTable))) {
             QUIC_API_TABLE* thisTable = this;
-            memcpy(thisTable, ApiTable, sizeof(*ApiTable));
+            memcpy(thisTable, ApiTable, sizeof(QUIC_API_TABLE));
         }
     }
     ~MsQuicApi() noexcept {
         if (QUIC_SUCCEEDED(InitStatus)) {
-            MsQuicClose(ApiTable);
+            CloseFn(ApiTable);
             ApiTable = nullptr;
             QUIC_API_TABLE* thisTable = this;
             memset(thisTable, 0, sizeof(*thisTable));
@@ -458,6 +577,7 @@ public:
     MsQuicSettings& SetDisconnectTimeoutMs(uint32_t Value) { DisconnectTimeoutMs = Value; IsSet.DisconnectTimeoutMs = TRUE; return *this; }
     MsQuicSettings& SetPeerBidiStreamCount(uint16_t Value) { PeerBidiStreamCount = Value; IsSet.PeerBidiStreamCount = TRUE; return *this; }
     MsQuicSettings& SetPeerUnidiStreamCount(uint16_t Value) { PeerUnidiStreamCount = Value; IsSet.PeerUnidiStreamCount = TRUE; return *this; }
+    MsQuicSettings& SetStreamRecvWindowDefault(uint32_t Value) { StreamRecvWindowDefault = Value; IsSet.StreamRecvWindowDefault = TRUE; return *this; }
     MsQuicSettings& SetMaxBytesPerKey(uint64_t Value) { MaxBytesPerKey = Value; IsSet.MaxBytesPerKey = TRUE; return *this; }
     MsQuicSettings& SetMaxAckDelayMs(uint32_t Value) { MaxAckDelayMs = Value; IsSet.MaxAckDelayMs = TRUE; return *this; }
     MsQuicSettings& SetMaximumMtu(uint16_t Mtu) { MaximumMtu = Mtu; IsSet.MaximumMtu = TRUE; return *this; }
@@ -473,6 +593,9 @@ public:
 #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
     MsQuicSettings& SetEncryptionOffloadAllowed(bool Value) { EncryptionOffloadAllowed = Value; IsSet.EncryptionOffloadAllowed = TRUE; return *this; }
     MsQuicSettings& SetReliableResetEnabled(bool value) { ReliableResetEnabled = value; IsSet.ReliableResetEnabled = TRUE; return *this; }
+    MsQuicSettings& SetOneWayDelayEnabled(bool value) { OneWayDelayEnabled = value; IsSet.OneWayDelayEnabled = TRUE; return *this; }
+    MsQuicSettings& SetNetStatsEventEnabled(bool value) { NetStatsEventEnabled = value; IsSet.NetStatsEventEnabled = TRUE; return *this; }
+    MsQuicSettings& SetStreamMultiReceiveEnabled(bool value) { StreamMultiReceiveEnabled = value; IsSet.StreamMultiReceiveEnabled = TRUE; return *this; }
 #endif
 
     QUIC_STATUS
@@ -750,7 +873,7 @@ struct MsQuicListener {
     QUIC_STATUS
     Start(
         _In_ const MsQuicAlpn& Alpns,
-        _In_ const QUIC_ADDR* Address = nullptr
+        _In_opt_ const QUIC_ADDR* Address = nullptr
         ) noexcept {
         return MsQuic->ListenerStart(Handle, Alpns, Alpns.Length(), Address);
     }
@@ -1210,7 +1333,7 @@ private:
 };
 
 struct MsQuicAutoAcceptListener : public MsQuicListener {
-    const MsQuicConfiguration& Configuration;
+    const MsQuicConfiguration* Configuration;
     MsQuicConnectionCallback* ConnectionHandler;
     MsQuicConnection* LastConnection {nullptr};
     void* ConnectionContext;
@@ -1220,12 +1343,23 @@ struct MsQuicAutoAcceptListener : public MsQuicListener {
 
     MsQuicAutoAcceptListener(
         _In_ const MsQuicRegistration& Registration,
+        _In_ MsQuicConnectionCallback* _ConnectionHandler,
+        _In_ void* _ConnectionContext = nullptr
+        ) noexcept :
+        MsQuicListener(Registration, CleanUpManual, ListenerCallback, this),
+        Configuration(nullptr),
+        ConnectionHandler(_ConnectionHandler),
+        ConnectionContext(_ConnectionContext)
+    { }
+
+    MsQuicAutoAcceptListener(
+        _In_ const MsQuicRegistration& Registration,
         _In_ const MsQuicConfiguration& Config,
         _In_ MsQuicConnectionCallback* _ConnectionHandler,
         _In_ void* _ConnectionContext = nullptr
         ) noexcept :
         MsQuicListener(Registration, CleanUpManual, ListenerCallback, this),
-        Configuration(Config),
+        Configuration(&Config),
         ConnectionHandler(_ConnectionHandler),
         ConnectionContext(_ConnectionContext)
     { }
@@ -1247,14 +1381,15 @@ private:
         if (Event->Type == QUIC_LISTENER_EVENT_NEW_CONNECTION) {
             auto Connection = new(std::nothrow) MsQuicConnection(Event->NEW_CONNECTION.Connection, CleanUpAutoDelete, pThis->ConnectionHandler, pThis->ConnectionContext);
             if (Connection) {
-                Status = Connection->SetConfiguration(pThis->Configuration);
-                if (QUIC_FAILED(Status)) {
+                if (!pThis->Configuration ||
+                    QUIC_FAILED(Status = Connection->SetConfiguration(*pThis->Configuration))) {
                     //
                     // The connection is being rejected. Let MsQuic free the handle.
                     //
                     Connection->Handle = nullptr;
                     delete Connection;
                 } else {
+                    Status = QUIC_STATUS_SUCCESS;
                     pThis->LastConnection = Connection;
 #ifdef CX_PLATFORM_TYPE
                     InterlockedIncrement((long*)&pThis->AcceptedConnectionCount);
@@ -1440,6 +1575,40 @@ struct MsQuicStream {
                 Statistics);
     }
 
+    #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
+    QUIC_STATUS
+    SetReliableOffset(_In_ uint64_t Offset) noexcept {
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_STREAM_RELIABLE_OFFSET,
+                sizeof(Offset),
+                &Offset);
+    }
+
+    QUIC_STATUS
+    GetReliableOffset(_Out_ uint64_t* Offset) const noexcept {
+        uint32_t Size = sizeof(*Offset);
+        return
+            MsQuic->GetParam(
+                Handle,
+                QUIC_PARAM_STREAM_RELIABLE_OFFSET,
+                &Size,
+                Offset);
+    }
+
+    QUIC_STATUS
+    GetReliableOffsetRecv(_Out_ uint64_t* Offset) const noexcept {
+        uint32_t Size = sizeof(*Offset);
+        return
+            MsQuic->GetParam(
+                Handle,
+                QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV,
+                &Size,
+                Offset);
+    }
+    #endif
+
     QUIC_STATUS GetInitStatus() const noexcept { return InitStatus; }
     bool IsValid() const { return QUIC_SUCCEEDED(InitStatus); }
     MsQuicStream(const MsQuicStream& Other) = delete;
@@ -1517,3 +1686,5 @@ struct QuicBufferScope {
     operator QUIC_BUFFER* () noexcept { return Buffer; }
     ~QuicBufferScope() noexcept { if (Buffer) { delete[](uint8_t*) Buffer; } }
 };
+
+#endif  //  _WIN32

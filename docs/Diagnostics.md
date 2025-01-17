@@ -15,6 +15,14 @@ On Windows, MsQuic leverages manifested [ETW](https://docs.microsoft.com/en-us/w
 
 ### Linux
 
+#### stdout
+
+The easiest and quickest way to enable msquic logging is by compiling msquic with the following cmake arguments to direct the logs to standard output:
+
+```sh
+cmake -D QUIC_ENABLE_LOGGING=ON -D QUIC_LOGGING_TYPE=stdout ...
+```
+
 #### LTTng
 On Linux, MsQuic leverages [LTTng](https://lttng.org/features/) for its logging. Some dependencies, such as babeltrace, lttng, and clog2text_lttng are required. The simplest way to install all dependencies is by running `./scripts/prepare-machine.ps1 -ForTest`, but if you only want to collect the traces on the machine, the **minimal dependencies** are:
 
@@ -194,11 +202,20 @@ and it must be placed in the same directory as the `msquic.so`.
 
 Building `clog2text_lttng`:
 ```
+cat > /etc/apt/preferences.d/99microsoft-dotnet.pref <<EOF
+Package: *
+Pin: origin "packages.microsoft.com"
+Pin-Priority: 1001
+EOF
+apt update
 apt install --no-install-recommends -y dotnet-runtime-6.0 dotnet-sdk-6.0 dotnet-host
 git submodule update --init submodules/clog
 dotnet build submodules/clog/src/clog2text/clog2text_lttng/ -c Release
-export PATH=$PWD/submodules/clog/src/clog2text/clog2text_lttng/bin/Release/net6.0/:$PATH
 ```
+> **Note**  
+> if you see error "A fatal error occurred. The folder [/usr/share/dotnet/host/fxr] does not exist"  
+> follow steps in https://stackoverflow.com/questions/73753672/a-fatal-error-occurred-the-folder-usr-share-dotnet-host-fxr-does-not-exist
+
 
 To convert the trace, you can use the following commands:
 
@@ -273,6 +290,7 @@ QUIC_PERF_COUNTER_PATH_VALIDATED | Total path challenges that succeed ever
 QUIC_PERF_COUNTER_PATH_FAILURE | Total path challenges that fail ever
 QUIC_PERF_COUNTER_SEND_STATELESS_RESET | Total stateless reset packets sent ever
 QUIC_PERF_COUNTER_SEND_STATELESS_RETRY | Total stateless retry packets sent ever
+QUIC_PERF_COUNTER_CONN_LOAD_REJECT | Total connections rejected due to worker load.
 
 ## Windows Performance Monitor
 
@@ -283,6 +301,50 @@ On the latest version of Windows, these counters are also exposed via PerfMon.ex
 ## ETW
 
 Counters are also captured at the beginning of MsQuic ETW traces, and unlike PerfMon, includes all MsQuic instances running on the system, both user and kernel mode.
+
+# Network Troubleshooting
+
+To see what is being transmited on the wire you might use an open-source tool like [Wireshark](https://www.wireshark.org). The packets captured by such tool will be encrypted due to TLS, therefore we must provide the secrets to enable Wireshark to decrypt the packets. 
+
+To enable this we must generate a [SSLKEYLOGFILE](https://www.ietf.org/archive/id/draft-thomson-tls-keylogfile-00.html#name-introduction-10) with information about the secrets used in the TLS connection. With such file we will be able to decrypt the packets.
+
+For some browsers all you have to do is to set an environment variable `SSLKEYLOGFILE` with the absolute path of the log file to be generated and then you can load it into Wireshark for troubleshooting. For MsQuic applications we need to generate such file. A good practice is to check if the `SSLKEYLOGFILE` env variable is set and if so you write the file. The steps are: 
+
+1. Set the `QUIC_PARAM_CONN_TLS_SECRETS` connection param with a struct to be populated with the TLS secrets by MsQuic. 
+```c
+// Define empty struct for the TLS Secrets
+QUIC_TLS_SECRETS ClientSecrets{};
+...
+
+// Get the value of the env variable to log the secrets 
+const char* SslKeyLogFile = getenv("SSLKEYLOGFILE");
+...
+
+// If the variable is set then we have a file to write the TLS secrets thus we
+// pass the struct to be filled
+if (SslKeyLogFile != NULL) {
+    MsQuic->SetParam(Connection, QUIC_PARAM_CONN_TLS_SECRETS, sizeof(ClientSecrets), &ClientSecrets);
+    // Check for errors...
+}
+```
+2. Write the file when the connection succeeds (event `QUIC_CONNECTION_EVENT_CONNECTED`).
+```c
+// On your connection callback function
+...
+if (Event->Type == QUIC_CONNECTION_EVENT_CONNECTED) {
+    if (SslKeyLogFile != NULL) {
+        WriteSslKeyLogFile(SslKeyLogFile, ClientSecrets);
+    }
+}
+```
+3. Write the `WriteSslKeyLogFile` function. You can just copy the function from [src/inc/msquichelper.h#WriteSslKeyLogFile](https://github.com/microsoft/msquic/blob/main/src/inc/msquichelper.h#L564) if it serves your needs or write your own.
+4. Set the `SSLKEYLOGFILE` env variable set to the path of the log file and run the program. Then check the file with the secets.
+
+5. Load the key log into Wireshark and start capturing to decrypt the packets. To learn how to load such file inside Wireshark refer to this documentation: [Using the (Pre)-Master-Secret](https://wiki.wireshark.org/TLS#using-the-pre-master-secret).
+
+Using a Wireshark version that supports QUIC is not mandatory but could help when troubleshooting. To know which version supports QUIC refer to https://github.com/quicwg/base-drafts/wiki/Tools#wireshark.
+ 
+If you need a working example on how to generate the key log file please refer to the Sample at src/tools/sample/sample.c.
 
 # Detailed Troubleshooting
 

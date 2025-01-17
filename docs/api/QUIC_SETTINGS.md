@@ -45,7 +45,20 @@ typedef struct QUIC_SETTINGS {
             uint64_t DestCidUpdateIdleTimeoutMs             : 1;
             uint64_t GreaseQuicBitEnabled                   : 1;
             uint64_t EcnEnabled                             : 1;
-            uint64_t RESERVED                               : 30;
+            uint64_t HyStartEnabled                         : 1;
+            uint64_t StreamRecvWindowBidiLocalDefault       : 1;
+            uint64_t StreamRecvWindowBidiRemoteDefault      : 1;
+            uint64_t StreamRecvWindowUnidiDefault           : 1;
+#ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
+            uint64_t EncryptionOffloadAllowed               : 1;
+            uint64_t ReliableResetEnabled                   : 1;
+            uint64_t OneWayDelayEnabled                     : 1;
+            uint64_t NetStatsEventEnabled                   : 1;
+            uint64_t StreamMultiReceiveEnabled              : 1;
+            uint64_t RESERVED                               : 21;
+#else
+            uint64_t RESERVED                               : 26;
+#endif
         } IsSet;
     };
 
@@ -83,6 +96,25 @@ typedef struct QUIC_SETTINGS {
     uint8_t MaxOperationsPerDrain;
     uint8_t MtuDiscoveryMissingProbeCount;
     uint32_t DestCidUpdateIdleTimeoutMs;
+    union {
+        uint64_t Flags;
+        struct {
+            uint64_t HyStartEnabled            : 1;
+#ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
+            uint64_t EncryptionOffloadAllowed  : 1;
+            uint64_t ReliableResetEnabled      : 1;
+            uint64_t OneWayDelayEnabled        : 1;
+            uint64_t NetStatsEventEnabled      : 1;
+            uint64_t StreamMultiReceiveEnabled : 1;
+            uint64_t ReservedFlags             : 58;
+#else
+            uint64_t ReservedFlags             : 63;
+#endif
+        };
+    };
+    uint32_t StreamRecvWindowBidiLocalDefault;
+    uint32_t StreamRecvWindowBidiRemoteDefault;
+    uint32_t StreamRecvWindowUnidiDefault;
 
 } QUIC_SETTINGS;
 ```
@@ -125,9 +157,9 @@ How much server TLS data to buffer.  If the application expects very large serve
 
 `StreamRecvWindowDefault`
 
-Initial stream receive window size.
+Initial stream receive flow control window size. This applies to all stream types. Limits for specific stream types can be set using `StreamRecvWindowBidirLocalDefault`, `StreamRecvWindowBidirRemoteDefault` and `StreamRecvWindowUnidirDefault`. The value must be a power of 2.
 
-**Default value:** 32,768
+**Default value:** 65,536
 
 `StreamRecvBufferDefault`
 
@@ -300,6 +332,30 @@ Advertise support for QUIC Grease Bit Extension. Both sides of a connection need
 `EcnEnabled`
 
 Enable sender-side ECN support. The connection will validate and react to ECN feedback from peer.
+
+**Default value:** 0 (`FALSE`)
+
+`StreamRecvWindowBidirLocalDefault`
+
+Initial stream receive flow control window size for locally initiated bidirectional streams. If set, this value overwrites the `StreamRecvWindowDefault`.
+
+**Default value:** 0 (no overwrite)
+
+`StreamRecvWindowBidirRemoteDefault`
+
+Initial stream receive flow control window size for remotely initiated bidirectional streams. If set, this value overwrites the `StreamRecvWindowDefault`.
+
+**Default value:** 0 (no overwrite)
+
+`StreamRecvWindowUnidiDefault`
+
+Initial stream receive flow control window size for remotely initiated unidirectional streams. If set, this value overwrites the `StreamRecvWindowDefault`.
+
+**Default value:** 0 (no overwrite)
+
+`StreamMultiReceiveEnabled`
+
+Enable multi receive mode. An app can continue receiving stream data without calling `StreamReceiveComplete` for each `QUIC_STREAM_EVENT_RECEIVE` indication.
 
 **Default value:** 0 (`FALSE`)
 

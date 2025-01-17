@@ -23,7 +23,7 @@ message(STATUS "Source Dir: ${CMAKE_CURRENT_SOURCE_DIR}")
 message(STATUS "Host System name: ${CMAKE_HOST_SYSTEM_NAME}")
 if ("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Windows")
     if (NOT DEFINED CMAKE_SYSTEM_VERSION)
-        set(CMAKE_SYSTEM_VERSION 10.0.18362 CACHE STRING INTERNAL FORCE)
+        set(CMAKE_SYSTEM_VERSION 10.0.22621.0 CACHE STRING INTERNAL FORCE)
     endif()
 endif()
 
@@ -56,7 +56,7 @@ message(STATUS "Platform version: ${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 set(QUIC_MAJOR_VERSION 2)
-set(QUIC_FULL_VERSION 2.3.0)
+set(QUIC_FULL_VERSION 2.5.0)
 
 if (WIN32)
     set(CX_PLATFORM "windows")
@@ -66,9 +66,6 @@ elseif (UNIX)
     set(CX_PLATFORM "linux")
 endif()
 message(STATUS "QUIC Platform: ${CX_PLATFORM}")
-
-set(FILENAME_DEP_REPLACE "get_filename_component(SELF_DIR \"$\{CMAKE_CURRENT_LIST_FILE\}\" PATH)")
-set(SELF_DIR "$\{SELF_DIR\}")
 
 enable_testing()
 
@@ -81,11 +78,14 @@ option(QUIC_BUILD_PERF "Builds the perf code" OFF)
 option(QUIC_BUILD_SHARED "Builds msquic as a dynamic library" ON)
 option(QUIC_ENABLE_LOGGING "Enables logging" OFF)
 option(QUIC_ENABLE_SANITIZERS "Enables sanitizers" OFF)
+option(QUIC_ENABLE_POOL_ALLOC "Enables pool allocations" ON)
 option(QUIC_STATIC_LINK_CRT "Statically links the C runtime" ON)
 option(QUIC_STATIC_LINK_PARTIAL_CRT "Statically links the compiler-specific portion of the C runtime" ON)
 option(QUIC_UWP_BUILD "Build for UWP" OFF)
 option(QUIC_GAMECORE_BUILD "Build for GameCore" OFF)
+option(QUIC_EXTERNAL_TOOLCHAIN "Enable if system libs and include paths are configured by CMake toolchain" OFF)
 option(QUIC_PGO "Enables profile guided optimizations" OFF)
+option(QUIC_LINUX_XDP_ENABLED "Enables XDP support" OFF)
 option(QUIC_SOURCE_LINK "Enables source linking on MSVC" ON)
 option(QUIC_EMBED_GIT_HASH "Embed git commit hash in the binary" ON)
 option(QUIC_PDBALTPATH "Enable PDBALTPATH setting on MSVC" ON)
@@ -96,7 +96,6 @@ option(QUIC_SKIP_CI_CHECKS "Disable CI specific build checks" OFF)
 option(QUIC_TELEMETRY_ASSERTS "Enable telemetry asserts in release builds" OFF)
 option(QUIC_USE_SYSTEM_LIBCRYPTO "Use system libcrypto if openssl TLS" OFF)
 option(QUIC_HIGH_RES_TIMERS "Configure the system to use high resolution timers" OFF)
-option(QUIC_USE_XDP "Uses XDP instead of socket APIs" OFF)
 option(QUIC_OFFICIAL_RELEASE "Configured the build for an official release" OFF)
 set(QUIC_FOLDER_PREFIX "" CACHE STRING "Optional prefix for source group folders when using an IDE generator")
 set(QUIC_LIBRARY_NAME "msquic" CACHE STRING "Override the output library name")
@@ -194,6 +193,8 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${QUIC_OUTPUT_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${QUIC_OUTPUT_DIR})
 
 set(QUIC_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/inc)
+
+include(GNUInstallDirs)
 
 if (WIN32)
     set(QUIC_WARNING_FLAGS /WX /W4 /sdl /wd4206 CACHE INTERNAL "")
@@ -307,6 +308,10 @@ else()
         list(APPEND QUIC_WARNING_FLAGS -Wno-strict-aliasing)
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         list(APPEND QUIC_WARNING_FLAGS -Wno-missing-braces -Wno-microsoft-anon-tag)
+        if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 18 OR
+           (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16 AND CMAKE_CXX_COMPILER_ID MATCHES "AppleClang"))
+            list(APPEND QUIC_WARNING_FLAGS -Wno-invalid-unevaluated-string)
+        endif()
     endif()
 endif()
 
@@ -325,7 +330,7 @@ if(QUIC_HIGH_RES_TIMERS)
     list(APPEND QUIC_COMMON_DEFINES QUIC_HIGH_RES_TIMERS=1)
 endif()
 
-if (QUIC_ENABLE_SANITIZERS)
+if (QUIC_ENABLE_SANITIZERS OR NOT QUIC_ENABLE_POOL_ALLOC)
     list(APPEND QUIC_COMMON_DEFINES DISABLE_CXPLAT_POOL=1)
 endif()
 
@@ -431,28 +436,40 @@ if (NOT MSVC AND NOT APPLE AND NOT ANDROID)
     endif()
 endif()
 
-if(WIN32)
-    if (CMAKE_GENERATOR_PLATFORM STREQUAL "")
-        string(TOLOWER ${CMAKE_SYSTEM_PROCESSOR} SYSTEM_PROCESSOR)
-    else()
-        string(TOLOWER ${CMAKE_GENERATOR_PLATFORM} SYSTEM_PROCESSOR)
-    endif()
+if (CMAKE_GENERATOR_PLATFORM STREQUAL "")
+string(TOLOWER ${CMAKE_SYSTEM_PROCESSOR} SYSTEM_PROCESSOR)
+else()
+string(TOLOWER ${CMAKE_GENERATOR_PLATFORM} SYSTEM_PROCESSOR)
+endif()
 
+if(WIN32)
     # Generate the MsQuicEtw header file.
     file(MAKE_DIRECTORY ${QUIC_BUILD_DIR}/inc)
+
+    if(NOT DEFINED CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH OR CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH)
+        find_program(MC_EXE NAMES mc.exe)
+        if(MC_EXE MATCHES "NOTFOUND")
+            # If not found, then VS project generator will set %PATH% env var to WinSDK bin directory
+            set(MC_EXE "mc.exe" CACHE STRING "mc.exe from %PATH%" FORCE)
+        endif()
+    else()
+        find_program(MC_EXE NAMES mc.exe REQUIRED)
+    endif()
 
     add_custom_command(
         OUTPUT ${QUIC_BUILD_DIR}/inc/MsQuicEtw.h
         OUTPUT ${QUIC_BUILD_DIR}/inc/MsQuicEtw.rc
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/manifest/MsQuicEtw.man
-        COMMAND mc.exe -um -h ${QUIC_BUILD_DIR}/inc -r ${QUIC_BUILD_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/src/manifest/MsQuicEtw.man)
+        COMMAND "${MC_EXE}" -um -h ${QUIC_BUILD_DIR}/inc -r ${QUIC_BUILD_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/src/manifest/MsQuicEtw.man)
     add_custom_target(MsQuicEtw_HeaderBuild
         DEPENDS ${QUIC_BUILD_DIR}/inc/MsQuicEtw.h)
 
     set_property(TARGET MsQuicEtw_HeaderBuild PROPERTY FOLDER "${QUIC_FOLDER_PREFIX}helpers")
 
     add_library(MsQuicEtw_Header INTERFACE)
-    target_include_directories(MsQuicEtw_Header INTERFACE ${QUIC_BUILD_DIR}/inc)
+    target_include_directories(MsQuicEtw_Header INTERFACE
+        $<BUILD_INTERFACE:${QUIC_BUILD_DIR}/inc>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     add_dependencies(MsQuicEtw_Header MsQuicEtw_HeaderBuild)
 
     add_library(MsQuicEtw_Resource OBJECT ${QUIC_BUILD_DIR}/inc/MsQuicEtw.rc)
@@ -470,7 +487,11 @@ if(WIN32)
     endif()
 
     if (QUIC_GAMECORE_BUILD)
-        list(APPEND QUIC_COMMON_DEFINES WINAPI_FAMILY=WINAPI_FAMILY_GAMES QUIC_GAMECORE_BUILD QUIC_RESTRICTED_BUILD)
+        list(APPEND QUIC_COMMON_DEFINES QUIC_GAMECORE_BUILD QUIC_RESTRICTED_BUILD)
+    endif()
+
+    if (QUIC_GAMECORE_BUILD AND NOT QUIC_EXTERNAL_TOOLCHAIN)
+        list(APPEND QUIC_COMMON_DEFINES WINAPI_FAMILY=WINAPI_FAMILY_GAMES)
         set(CMAKE_CXX_STANDARD_LIBRARIES "")
         set(CMAKE_CXX_STANDARD_LIBRARIES_INIT "")
         set(CMAKE_C_STANDARD_LIBRARIES "")
@@ -551,11 +572,6 @@ if(WIN32)
     set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG /IGNORE:4075 /DEBUG /OPT:REF /OPT:ICF")
 
     # Find the right PGO file.
-    if(QUIC_USE_XDP)
-        set(QUIC_PGO_NAME "msquic.${QUIC_TLS}.xdp.pgd")
-        set(QUIC_PGO_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/bin/winuser/pgo_${SYSTEM_PROCESSOR}/${QUIC_PGO_NAME}")
-    endif()
-
     if(NOT EXISTS "${QUIC_PGO_FILE}")
         set(QUIC_PGO_NAME "msquic.${QUIC_TLS}.pgd")
         set(QUIC_PGO_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/bin/winuser/pgo_${SYSTEM_PROCESSOR}/${QUIC_PGO_NAME}")
@@ -688,38 +704,50 @@ if(QUIC_CODE_CHECK)
             -android-cloexec-fopen
             -android-cloexec-socket
             -bugprone-assignment-in-if-condition
+            -bugprone-casting-through-void
             -bugprone-easily-swappable-parameters
             -bugprone-implicit-widening-of-multiplication-result
             -bugprone-macro-parentheses
+            -bugprone-multi-level-implicit-pointer-conversion
             -bugprone-narrowing-conversions
             -bugprone-reserved-identifier
             -bugprone-sizeof-expression
+            -bugprone-switch-missing-default-case
             -cert-dcl37-c
             -cert-dcl51-cpp
             -cert-err33-c
+            -clang-analyzer-optin.core.EnumCastOutOfRange
             -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+            -clang-diagnostic-invalid-unevaluated-string
             -clang-diagnostic-microsoft-anon-tag
             -concurrency-mt-unsafe
             -cppcoreguidelines-avoid-magic-numbers
             -cppcoreguidelines-avoid-non-const-global-variables
             -cppcoreguidelines-init-variables
+            -cppcoreguidelines-macro-to-enum
             -cppcoreguidelines-narrowing-conversions
+            -google-readability-casting
             -google-readability-function-size
             -google-readability-todo
             -hicpp-function-size
             -hicpp-no-assembler
             -hicpp-signed-bitwise
             -llvmlibc-restrict-system-libc-headers
+            -misc-include-cleaner
             -misc-no-recursion # do you really need recursion?
+            -misc-header-include-cycle
             -modernize-macro-to-enum
             -readability-avoid-const-params-in-decls
+            -readability-avoid-nested-conditional-operator
             -readability-duplicate-include
             -readability-function-cognitive-complexity
             -readability-function-size
             -readability-identifier-length
+            -readability-identifier-naming
             -readability-isolate-declaration
             -readability-magic-numbers
             -readability-non-const-parameter
+            -readability-redundant-casting
         )
         string(REPLACE ";" "," CLANG_TIDY_CHECKS "${CLANG_TIDY_CHECKS}")
         set(CMAKE_C_CLANG_TIDY_AVAILABLE ${CLANGTIDY} -checks=${CLANG_TIDY_CHECKS}
@@ -801,6 +829,13 @@ if(QUIC_BUILD_TEST)
     if (HAS_GUARDCF)
         target_compile_options(gtest PRIVATE /guard:cf)
         target_compile_options(gtest_main PRIVATE /guard:cf)
+    endif()
+
+    if(WIN32 AND QUIC_ENABLE_SANITIZERS)
+        target_compile_options(gtest PRIVATE /fsanitize=address)
+        target_compile_options(gtest_main PRIVATE /fsanitize=address)
+        target_compile_definitions(gtest PRIVATE _DISABLE_VECTOR_ANNOTATION)
+        target_compile_definitions(gtest_main PRIVATE _DISABLE_VECTOR_ANNOTATION)
     endif()
 
     add_subdirectory(src/core/unittest)

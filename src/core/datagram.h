@@ -96,10 +96,16 @@ _IRQL_requires_max_(PASSIVE_LEVEL)
 BOOLEAN
 QuicDatagramProcessFrame(
     _In_ QUIC_DATAGRAM* Datagram,
-    _In_ const CXPLAT_RECV_PACKET* const Packet,
+    _In_ const QUIC_RX_PACKET* const Packet,
     _In_ QUIC_FRAME_TYPE FrameType,
     _In_ uint16_t BufferLength,
     _In_reads_bytes_(BufferLength)
         const uint8_t * const Buffer,
     _Inout_ uint16_t* Offset
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicDatagramCancelBlocked(
+    _In_ QUIC_CONNECTION* Connection
     );

@@ -129,7 +129,7 @@ QuicLibraryInitializePartitions(
 {
     CXPLAT_DBG_ASSERT(MsQuicLib.PerProc == NULL);
 
-    MsQuicLib.ProcessorCount = (uint16_t)CxPlatProcMaxCount();
+    MsQuicLib.ProcessorCount = (uint16_t)CxPlatProcCount();
     CXPLAT_FRE_ASSERT(MsQuicLib.ProcessorCount > 0);
 
     if (MsQuicLib.ExecutionConfig && MsQuicLib.ExecutionConfig->ProcessorCount) {
@@ -265,7 +265,7 @@ QuicPerfCounterSnapShot(
     QuicTraceEvent(
         PerfCountersRundown,
         "[ lib] Perf counters Rundown, Counters=%!CID!",
-        CASTED_CLOG_BYTEARRAY(sizeof(PerfCounterSamples), PerfCounterSamples));
+        CASTED_CLOG_BYTEARRAY16(sizeof(PerfCounterSamples), PerfCounterSamples));
 
 // Ensure a perf counter stays below a given max Hz/frequency.
 #define QUIC_COUNTER_LIMIT_HZ(TYPE, LIMIT_PER_SECOND) \
@@ -360,6 +360,7 @@ MsQuicLibraryInitialize(
     if (QUIC_FAILED(Status)) {
         goto Error; // Cannot log anything if platform failed to initialize.
     }
+    CxPlatWorkerPoolInit(&MsQuicLib.WorkerPool);
     PlatformInitialized = TRUE;
 
     CXPLAT_DBG_ASSERT(US_TO_MS(CxPlatGetTimerResolution()) + 1 <= UINT8_MAX);
@@ -459,6 +460,7 @@ Error:
             MsQuicLib.DefaultCompatibilityList = NULL;
         }
         if (PlatformInitialized) {
+            CxPlatWorkerPoolUninit(&MsQuicLib.WorkerPool);
             CxPlatUninitialize();
         }
     }
@@ -576,6 +578,7 @@ MsQuicLibraryUninitialize(
         LibraryUninitialized,
         "[ lib] Uninitialized");
 
+    CxPlatWorkerPoolUninit(&MsQuicLib.WorkerPool);
     CxPlatUninitialize();
 }
 
@@ -677,9 +680,10 @@ QuicLibraryLazyInitialize(
 
     Status =
         CxPlatDataPathInitialize(
-            sizeof(CXPLAT_RECV_PACKET),
+            sizeof(QUIC_RX_PACKET),
             &DatapathCallbacks,
             NULL,                   // TcpCallbacks
+            &MsQuicLib.WorkerPool,
             MsQuicLib.ExecutionConfig,
             &MsQuicLib.Datapath);
     if (QUIC_SUCCEEDED(Status)) {
@@ -856,6 +860,9 @@ QuicLibrarySetGlobalParam(
 
         MsQuicLib.Settings.LoadBalancingMode = *(uint16_t*)Buffer;
         MsQuicLib.Settings.IsSet.LoadBalancingMode = TRUE;
+
+        QuicLibApplyLoadBalancingSetting();
+
         QuicTraceLogInfo(
             LibraryLoadBalancingModeSet,
             "[ lib] Updated load balancing mode = %hu",
@@ -992,7 +999,7 @@ QuicLibrarySetGlobalParam(
         }
 
         for (uint32_t i = 0; i < Config->ProcessorCount; ++i) {
-            if (Config->ProcessorList[i] >= CxPlatProcMaxCount()) {
+            if (Config->ProcessorList[i] >= CxPlatProcCount()) {
                 return QUIC_STATUS_INVALID_PARAMETER;
             }
         }
@@ -1110,6 +1117,37 @@ QuicLibrarySetGlobalParam(
         MsQuicLib.Settings.VersionNegotiationExtEnabled = *(BOOLEAN*)Buffer;
 
         Status = QUIC_STATUS_SUCCESS;
+        break;
+
+    case QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY:
+        if (!MsQuicLib.LazyInitComplete) {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+        if (BufferLength != QUIC_STATELESS_RESET_KEY_LENGTH * sizeof(uint8_t)) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        Status = QUIC_STATUS_SUCCESS;
+        for (uint16_t i = 0; i < MsQuicLib.ProcessorCount; ++i) {
+            CXPLAT_HASH* TokenHash = NULL;
+            Status =
+                CxPlatHashCreate(
+                    CXPLAT_HASH_SHA256,
+                    (uint8_t*)Buffer,
+                    QUIC_STATELESS_RESET_KEY_LENGTH * sizeof(uint8_t),
+                    &TokenHash);
+            if (QUIC_FAILED(Status)) {
+                break;
+            }
+
+            QUIC_LIBRARY_PP* PerProc = &MsQuicLib.PerProc[i];
+            CxPlatLockAcquire(&PerProc->ResetTokenLock);
+            CxPlatHashFree(PerProc->ResetTokenHash);
+            PerProc->ResetTokenHash = TokenHash;
+            CxPlatLockRelease(&PerProc->ResetTokenLock);
+        }
         break;
 
     default:
@@ -1384,6 +1422,24 @@ QuicLibraryGetGlobalParam(
         Status = QUIC_STATUS_SUCCESS;
         break;
 
+    case QUIC_PARAM_GLOBAL_PLATFORM_WORKER_POOL:
+
+        if (*BufferLength != sizeof(CXPLAT_WORKER_POOL*)) {
+            *BufferLength = sizeof(CXPLAT_WORKER_POOL*);
+            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        if (Buffer == NULL) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        *(CXPLAT_WORKER_POOL**)Buffer = &MsQuicLib.WorkerPool;
+
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+
     default:
         Status = QUIC_STATUS_INVALID_PARAMETER;
         break;
@@ -1633,8 +1689,10 @@ QuicLibraryGetParam(
 
     case QUIC_PARAM_PREFIX_TLS:
     case QUIC_PARAM_PREFIX_TLS_SCHANNEL:
-        if (Connection == NULL || Connection->Crypto.TLS == NULL) {
+        if (Connection == NULL) {
             Status = QUIC_STATUS_INVALID_PARAMETER;
+        } else if (Connection->Crypto.TLS == NULL) {
+            Status = QUIC_STATUS_INVALID_STATE;
         } else {
             Status = CxPlatTlsParamGet(Connection->Crypto.TLS, Param, BufferLength, Buffer);
         }
@@ -2163,13 +2221,13 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_WORKER*
 QUIC_NO_SANITIZE("implicit-conversion")
 QuicLibraryGetWorker(
-    _In_ const _In_ CXPLAT_RECV_DATA* Datagram
+    _In_ const QUIC_RX_PACKET* Packet
     )
 {
     CXPLAT_DBG_ASSERT(MsQuicLib.StatelessRegistration != NULL);
     return
         &MsQuicLib.StatelessRegistration->WorkerPool->Workers[
-            Datagram->PartitionIndex % MsQuicLib.StatelessRegistration->WorkerPool->WorkerCount];
+            Packet->PartitionIndex % MsQuicLib.StatelessRegistration->WorkerPool->WorkerCount];
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -2236,7 +2294,7 @@ QuicTraceRundown(
         QuicTraceEvent(
             PerfCountersRundown,
             "[ lib] Perf counters Rundown, Counters=%!CID!",
-            CASTED_CLOG_BYTEARRAY(sizeof(PerfCounters), PerfCounters));
+            CASTED_CLOG_BYTEARRAY16(sizeof(PerfCounters), PerfCounters));
     }
 
     CxPlatLockRelease(&MsQuicLib.Lock);

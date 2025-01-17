@@ -43,6 +43,11 @@ Abstract:
 #endif
 #endif
 
+//
+// Every data structure here has a matching ETW manifest definition. If you
+// want to add something new, be sure to append it to the relevant enum block so
+// as to preserve the existing values / order.
+//
 typedef enum QUIC_FLOW_BLOCK_REASON {
     QUIC_FLOW_BLOCKED_SCHEDULING            = 0x01,
     QUIC_FLOW_BLOCKED_PACING                = 0x02,
@@ -88,8 +93,6 @@ typedef enum QUIC_TRACE_API_TYPE {
     QUIC_TRACE_API_CONNECTION_START,
     QUIC_TRACE_API_CONNECTION_SET_CONFIGURATION,
     QUIC_TRACE_API_CONNECTION_SEND_RESUMPTION_TICKET,
-    QUIC_TRACE_API_CONNECTION_COMPLETE_RESUMPTION_TICKET_VALIDATION,
-    QUIC_TRACE_API_CONNECTION_COMPLETE_CERTIFICATE_VALIDATION,
     QUIC_TRACE_API_STREAM_OPEN,
     QUIC_TRACE_API_STREAM_CLOSE,
     QUIC_TRACE_API_STREAM_START,
@@ -98,6 +101,8 @@ typedef enum QUIC_TRACE_API_TYPE {
     QUIC_TRACE_API_STREAM_RECEIVE_COMPLETE,
     QUIC_TRACE_API_STREAM_RECEIVE_SET_ENABLED,
     QUIC_TRACE_API_DATAGRAM_SEND,
+    QUIC_TRACE_API_CONNECTION_COMPLETE_RESUMPTION_TICKET_VALIDATION,
+    QUIC_TRACE_API_CONNECTION_COMPLETE_CERTIFICATE_VALIDATION,
     QUIC_TRACE_API_COUNT // Must be last
 } QUIC_TRACE_API_TYPE;
 
@@ -137,6 +142,7 @@ extern QUIC_TRACE_RUNDOWN_CALLBACK* QuicTraceRundownCallback;
 #endif
 
 #define CASTED_CLOG_BYTEARRAY(Len, Data) CLOG_BYTEARRAY((unsigned char)(Len), (const unsigned char*)(Data))
+#define CASTED_CLOG_BYTEARRAY16(Len, Data) CLOG_BYTEARRAY((unsigned short)(Len), (const unsigned char*)(Data))
 #else
 
 #if defined(QUIC_EVENTS_STDOUT) || defined(QUIC_LOGS_STDOUT) ||                \
@@ -205,9 +211,13 @@ casted_clog_bytearray(const uint8_t * const data,
     UNREFERENCED_PARAMETER(head);
     return 0;
 }
+
 #endif
 
 #define CASTED_CLOG_BYTEARRAY(Len, Data)                                       \
+    casted_clog_bytearray((const uint8_t *)(Data), (Len), &__head)
+
+#define CASTED_CLOG_BYTEARRAY16(Len, Data)                                       \
     casted_clog_bytearray((const uint8_t *)(Data), (Len), &__head)
 
 #endif
@@ -255,6 +265,9 @@ QuicEtwCallback(
 
 #define CLOG_BYTEARRAY(Len, Data) (uint8_t)(Len), (uint8_t*)(Data)
 #define CASTED_CLOG_BYTEARRAY(Len, Data) CLOG_BYTEARRAY((unsigned char)(Len), (const unsigned char*)(Data))
+
+#define CLOG_BYTEARRAY16(Len, Data) (uint16_t)(Len), (uint8_t*)(Data)
+#define CASTED_CLOG_BYTEARRAY16(Len, Data) CLOG_BYTEARRAY16((unsigned short)(Len), (const unsigned char*)(Data))
 
 
 #endif // QUIC_EVENTS_MANIFEST_ETW

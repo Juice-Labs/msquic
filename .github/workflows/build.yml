@@ -28,11 +28,10 @@ jobs:
       matrix:
         config: ['Debug', 'Release']
         plat: [windows, uwp] # TODO: Support gamecore_console
-        os: ['windows-2019', 'windows-2022']
+        os: ['windows-2022']
         arch: [x86, x64, arm64]
         tls: [schannel, openssl, openssl3]
         static: ['', '-Static']
-        xdp: ['', '-UseXdp']
         exclude:
         # OpenSSL doesn't support arm64
         - tls: openssl
@@ -46,15 +45,6 @@ jobs:
         # TODO: FIX: Static builds fail with UWP
         - plat: uwp
           static: '-Static'
-        # XDP not supported in UWP
-        - plat: uwp
-          xdp: '-UseXdp'
-        # XDP only supports x64 currently
-        - arch: x86
-          xdp: '-UseXdp'
-        # XDP only supports x64 currently
-        - arch: arm64
-          xdp: '-UseXdp'
     uses: ./.github/workflows/build-reuse-win.yml
     with:
       config: ${{ matrix.config }}
@@ -63,7 +53,7 @@ jobs:
       arch: ${{ matrix.arch }}
       tls: ${{ matrix.tls }}
       static: ${{ matrix.static }}
-      xdp: ${{ matrix.xdp }}
+      repo: ${{ github.repository }}
 
   build-windows-kernel:
     name: WinKernel
@@ -73,7 +63,7 @@ jobs:
       matrix:
         config: ['Debug', 'Release']
         plat: [winkernel]
-        os: ['windows-2019', 'windows-2022']
+        os: ['windows-2022']
         arch: [x64, arm64]
         tls: [schannel]
     uses: ./.github/workflows/build-reuse-winkernel.yml
@@ -83,6 +73,7 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       tls: ${{ matrix.tls }}
+      repo: ${{ github.repository }}
 
   build-ubuntu-cross-compile:
     name: UbuntuArm
@@ -92,7 +83,7 @@ jobs:
       matrix:
         config: ['Debug', 'Release']
         plat: [linux]
-        os: ['ubuntu-20.04', 'ubuntu-22.04']
+        os: ['ubuntu-20.04', 'ubuntu-22.04', 'ubuntu-24.04']
         arch: [arm, arm64]
         tls: [openssl, openssl3]
         static: ['', '-Static']
@@ -104,6 +95,7 @@ jobs:
       arch: ${{ matrix.arch }}
       tls: ${{ matrix.tls }}
       static: ${{ matrix.static }}
+      repo: ${{ github.repository }}
 
   build-ubuntu:
     name: Ubuntu
@@ -113,13 +105,14 @@ jobs:
       matrix:
         config: ['Debug', 'Release']
         plat: [linux, android]
-        os: ['ubuntu-20.04', 'ubuntu-22.04']
+        os: ['ubuntu-20.04', 'ubuntu-22.04', 'ubuntu-24.04']
         arch: [x86, x64]
         tls: [openssl, openssl3]
         systemcrypto: ['', '-UseSystemOpenSSLCrypto']
         static: ['', '-Static']
         clang: ['', '-Clang']
         codecheck: ['', '-CodeCheck']
+        xdp: ['', '-UseXdp']
         exclude:
         # Android doesn't support x86
         - plat: android
@@ -127,6 +120,9 @@ jobs:
         # Android doesn't use system crypto
         - plat: android
           systemcrypto: '-UseSystemOpenSSLCrypto'
+        # TODO: android to support ubuntu-24.04
+        - plat: android
+          os: 'ubuntu-24.04'
         # No openssl3 system crypto on ubuntu-20.04
         - plat: linux
           os: 'ubuntu-20.04'
@@ -137,6 +133,20 @@ jobs:
           os: 'ubuntu-22.04'
           tls: 'openssl'
           systemcrypto: '-UseSystemOpenSSLCrypto'
+        # No openssl system crypto on ubuntu-24.04
+        - plat: linux
+          os: 'ubuntu-24.04'
+          tls: 'openssl'
+          systemcrypto: '-UseSystemOpenSSLCrypto'
+        # linux xdp is for ubuntu24.04 only for now
+        - plat: android
+          xdp: "-UseXdp"
+        - os: 'ubuntu-20.04'
+          xdp: "-UseXdp"
+        - os: 'ubuntu-22.04'
+          xdp: "-UseXdp"
+        - arch: x86
+          xdp: "-UseXdp"
         # Android doesn't use Clang
         - plat: android
           clang: '-Clang'
@@ -169,6 +179,8 @@ jobs:
       static: ${{ matrix.static }}
       clang: ${{ matrix.clang }}
       codecheck: ${{ matrix.codecheck }}
+      xdp: ${{ matrix.xdp }}
+      repo: ${{ github.repository }}
 
   build-darwin:
     name: MacOs
@@ -178,7 +190,7 @@ jobs:
       matrix:
         config: ['Debug', 'Release']
         plat: [macos, ios]
-        os: ['macos-12']
+        os: ['macos-13']
         arch: [x64, arm64]
         tls: [openssl, openssl3]
         static: ['', '-Static']
@@ -190,6 +202,7 @@ jobs:
       arch: ${{ matrix.arch }}
       tls: ${{ matrix.tls }}
       static: ${{ matrix.static }}
+      repo: ${{ github.repository }}
 
   build-nuget:
     name: Build Nuget Package
@@ -201,36 +214,46 @@ jobs:
           { plat: "uwp",  tls: "openssl", arg: "-UWP" },
           { plat: "windows",  tls: "openssl" },
           { plat: "windows",  tls: "schannel" },
-          { plat: "windows",  tls: "openssl", xdp: "-UseXdp", arg: "-XDP" },
-          { plat: "windows",  tls: "schannel", xdp: "-UseXdp", arg: "-XDP" },
         ]
     runs-on: windows-2022
     steps:
     - name: Checkout repository
-      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
     - name: Download Build Artifacts
-      uses: dawidd6/action-download-artifact@246dbf436b23d7c49e21a7ab8204ca9ecd1fe615
+      uses: dawidd6/action-download-artifact@80620a5d27ce0ae443b965134db88467fc607b43
       with:
-        name: Release-${{ matrix.vec.plat }}-windows-2022-x86-${{ matrix.vec.tls }}${{ matrix.vec.xdp }}
+        name: Release-${{ matrix.vec.plat }}-windows-2022-x86-${{ matrix.vec.tls }}
         path: artifacts
         if_no_artifact_found: ignore
     - name: Download Build Artifacts
-      uses: dawidd6/action-download-artifact@246dbf436b23d7c49e21a7ab8204ca9ecd1fe615
+      uses: dawidd6/action-download-artifact@80620a5d27ce0ae443b965134db88467fc607b43
       with:
-        name: Release-${{ matrix.vec.plat }}-windows-2022-x64-${{ matrix.vec.tls }}${{ matrix.vec.xdp }}
+        name: Release-${{ matrix.vec.plat }}-windows-2022-x64-${{ matrix.vec.tls }}
         path: artifacts
         if_no_artifact_found: ignore
     - name: Download Build Artifacts
-      uses: dawidd6/action-download-artifact@246dbf436b23d7c49e21a7ab8204ca9ecd1fe615
+      uses: dawidd6/action-download-artifact@80620a5d27ce0ae443b965134db88467fc607b43
       with:
-        name: Release-${{ matrix.vec.plat }}-windows-2022-arm64-${{ matrix.vec.tls }}${{ matrix.vec.xdp }}
+        name: Release-${{ matrix.vec.plat }}-windows-2022-arm64-${{ matrix.vec.tls }}
         path: artifacts
         if_no_artifact_found: ignore
     - name: Build Package
       shell: pwsh
       run: scripts/package-nuget.ps1 -Tls ${{ matrix.vec.tls }} ${{ matrix.vec.arg }} -GHA
     - name: Upload build artifacts
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce
+      uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
       with:
-        name: Nuget-Release-${{ matrix.vec.plat }}-windows-2022-arm64-${{ matrix.vec.tls }}${{ matrix.vec.xdp }}
+        name: Nuget-Release-${{ matrix.vec.plat }}-windows-2022-arm64-${{ matrix.vec.tls }}
         path: artifacts/dist/*.nupkg
+
+  Complete:
+    name: Build Complete
+    if: always()
+    needs: [build-windows, build-windows-kernel, build-ubuntu-cross-compile, build-ubuntu, build-darwin, build-nuget]
+    runs-on: ubuntu-latest
+    permissions: {} # No need for any permissions.
+    steps:
+    - name: Decide whether the needed jobs succeeded or failed
+      uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe
+      with:
+        jobs: ${{ toJSON(needs) }}

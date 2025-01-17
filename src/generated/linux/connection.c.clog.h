@@ -453,24 +453,6 @@ tracepoint(CLOG_CONNECTION_C, UnreachableInvalid , arg1);\
 
 
 /*----------------------------------------------------------
-// Decoder Ring for CloseUserCanceled
-// [conn][%p] Connection close using user canceled error
-// QuicTraceLogConnInfo(
-                CloseUserCanceled,
-                Connection,
-                "Connection close using user canceled error");
-// arg1 = arg1 = Connection = arg1
-----------------------------------------------------------*/
-#ifndef _clog_3_ARGS_TRACE_CloseUserCanceled
-#define _clog_3_ARGS_TRACE_CloseUserCanceled(uniqueId, arg1, encoded_arg_string)\
-tracepoint(CLOG_CONNECTION_C, CloseUserCanceled , arg1);\
-
-#endif
-
-
-
-
-/*----------------------------------------------------------
 // Decoder Ring for CloseComplete
 // [conn][%p] Connection close complete
 // QuicTraceLogConnInfo(
@@ -875,23 +857,46 @@ tracepoint(CLOG_CONNECTION_C, ApplySettings , arg1);\
 
 
 /*----------------------------------------------------------
-// Decoder Ring for RttUpdatedMsg
-// [conn][%p] Updated Rtt=%u.%03u ms, Var=%u.%03u
+// Decoder Ring for PhaseShiftUpdated
+// [conn][%p] New Phase Shift: %lld us
 // QuicTraceLogConnVerbose(
-            RttUpdatedMsg,
-            Connection,
-            "Updated Rtt=%u.%03u ms, Var=%u.%03u",
-            Path->SmoothedRtt / 1000, Path->SmoothedRtt % 1000,
-            Path->RttVariance / 1000, Path->RttVariance % 1000);
+                PhaseShiftUpdated,
+                Connection,
+                "New Phase Shift: %lld us",
+                Connection->Stats.Timing.PhaseShift);
 // arg1 = arg1 = Connection = arg1
-// arg3 = arg3 = Path->SmoothedRtt / 1000 = arg3
-// arg4 = arg4 = Path->SmoothedRtt % 1000 = arg4
-// arg5 = arg5 = Path->RttVariance / 1000 = arg5
-// arg6 = arg6 = Path->RttVariance % 1000 = arg6
+// arg3 = arg3 = Connection->Stats.Timing.PhaseShift = arg3
 ----------------------------------------------------------*/
-#ifndef _clog_7_ARGS_TRACE_RttUpdatedMsg
-#define _clog_7_ARGS_TRACE_RttUpdatedMsg(uniqueId, arg1, encoded_arg_string, arg3, arg4, arg5, arg6)\
-tracepoint(CLOG_CONNECTION_C, RttUpdatedMsg , arg1, arg3, arg4, arg5, arg6);\
+#ifndef _clog_4_ARGS_TRACE_PhaseShiftUpdated
+#define _clog_4_ARGS_TRACE_PhaseShiftUpdated(uniqueId, arg1, encoded_arg_string, arg3)\
+tracepoint(CLOG_CONNECTION_C, PhaseShiftUpdated , arg1, arg3);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for RttUpdatedV2
+// [conn][%p] Updated Rtt=%u.%03u ms, Var=%u.%03u 1Way=%u.%03u ms
+// QuicTraceLogConnVerbose(
+        RttUpdatedV2,
+        Connection,
+        "Updated Rtt=%u.%03u ms, Var=%u.%03u 1Way=%u.%03u ms",
+        (uint32_t)(Path->SmoothedRtt / 1000), (uint32_t)(Path->SmoothedRtt % 1000),
+        (uint32_t)(Path->RttVariance / 1000), (uint32_t)(Path->RttVariance % 1000),
+        (uint32_t)(Path->OneWayDelay / 1000), (uint32_t)(Path->OneWayDelay % 1000));
+// arg1 = arg1 = Connection = arg1
+// arg3 = arg3 = (uint32_t)(Path->SmoothedRtt / 1000) = arg3
+// arg4 = arg4 = (uint32_t)(Path->SmoothedRtt % 1000) = arg4
+// arg5 = arg5 = (uint32_t)(Path->RttVariance / 1000) = arg5
+// arg6 = arg6 = (uint32_t)(Path->RttVariance % 1000) = arg6
+// arg7 = arg7 = (uint32_t)(Path->OneWayDelay / 1000) = arg7
+// arg8 = arg8 = (uint32_t)(Path->OneWayDelay % 1000) = arg8
+----------------------------------------------------------*/
+#ifndef _clog_9_ARGS_TRACE_RttUpdatedV2
+#define _clog_9_ARGS_TRACE_RttUpdatedV2(uniqueId, arg1, encoded_arg_string, arg3, arg4, arg5, arg6, arg7, arg8)\
+tracepoint(CLOG_CONNECTION_C, RttUpdatedV2 , arg1, arg3, arg4, arg5, arg6, arg7, arg8);\
 
 #endif
 
@@ -986,6 +991,24 @@ tracepoint(CLOG_CONNECTION_C, IndicateShutdownByTransport , arg1, arg3);\
 #ifndef _clog_3_ARGS_TRACE_IndicateConnectionShutdownComplete
 #define _clog_3_ARGS_TRACE_IndicateConnectionShutdownComplete(uniqueId, arg1, encoded_arg_string)\
 tracepoint(CLOG_CONNECTION_C, IndicateConnectionShutdownComplete , arg1);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for AbandonInternallyClosed
+// [conn][%p] Abandoning internal, closed connection
+// QuicTraceLogConnVerbose(
+                AbandonInternallyClosed,
+                Connection,
+                "Abandoning internal, closed connection");
+// arg1 = arg1 = Connection = arg1
+----------------------------------------------------------*/
+#ifndef _clog_3_ARGS_TRACE_AbandonInternallyClosed
+#define _clog_3_ARGS_TRACE_AbandonInternallyClosed(uniqueId, arg1, encoded_arg_string)\
+tracepoint(CLOG_CONNECTION_C, AbandonInternallyClosed , arg1);\
 
 #endif
 
@@ -1093,6 +1116,28 @@ tracepoint(CLOG_CONNECTION_C, IndicateReliableResetNegotiated , arg1, arg3);\
 
 
 /*----------------------------------------------------------
+// Decoder Ring for IndicateOneWayDelayNegotiated
+// [conn][%p] Indicating QUIC_CONNECTION_EVENT_ONE_WAY_DELAY_NEGOTIATED [Send=%hhu,Recv=%hhu]
+// QuicTraceLogConnVerbose(
+                IndicateOneWayDelayNegotiated,
+                Connection,
+                "Indicating QUIC_CONNECTION_EVENT_ONE_WAY_DELAY_NEGOTIATED [Send=%hhu,Recv=%hhu]",
+                Event.ONE_WAY_DELAY_NEGOTIATED.SendNegotiated,
+                Event.ONE_WAY_DELAY_NEGOTIATED.ReceiveNegotiated);
+// arg1 = arg1 = Connection = arg1
+// arg3 = arg3 = Event.ONE_WAY_DELAY_NEGOTIATED.SendNegotiated = arg3
+// arg4 = arg4 = Event.ONE_WAY_DELAY_NEGOTIATED.ReceiveNegotiated = arg4
+----------------------------------------------------------*/
+#ifndef _clog_5_ARGS_TRACE_IndicateOneWayDelayNegotiated
+#define _clog_5_ARGS_TRACE_IndicateOneWayDelayNegotiated(uniqueId, arg1, encoded_arg_string, arg3, arg4)\
+tracepoint(CLOG_CONNECTION_C, IndicateOneWayDelayNegotiated , arg1, arg3, arg4);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
 // Decoder Ring for IndicatePeerCertificateReceived
 // [conn][%p] Indicating QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED (0x%x, 0x%x)
 // QuicTraceLogConnVerbose(
@@ -1121,9 +1166,9 @@ tracepoint(CLOG_CONNECTION_C, IndicatePeerCertificateReceived , arg1, arg3, arg4
         QueueDatagrams,
         Connection,
         "Queuing %u UDP datagrams",
-        DatagramChainLength);
+        PacketChainLength);
 // arg1 = arg1 = Connection = arg1
-// arg3 = arg3 = DatagramChainLength = arg3
+// arg3 = arg3 = PacketChainLength = arg3
 ----------------------------------------------------------*/
 #ifndef _clog_4_ARGS_TRACE_QueueDatagrams
 #define _clog_4_ARGS_TRACE_QueueDatagrams(uniqueId, arg1, encoded_arg_string, arg3)\
@@ -1360,9 +1405,9 @@ tracepoint(CLOG_CONNECTION_C, UdpRecvBatch , arg1, arg3);\
             UdpRecvDeferred,
             Connection,
             "Recv %u deferred UDP datagrams",
-            DatagramChainCount);
+            PacketChainCount);
 // arg1 = arg1 = Connection = arg1
-// arg3 = arg3 = DatagramChainCount = arg3
+// arg3 = arg3 = PacketChainCount = arg3
 ----------------------------------------------------------*/
 #ifndef _clog_4_ARGS_TRACE_UdpRecvDeferred
 #define _clog_4_ARGS_TRACE_UdpRecvDeferred(uniqueId, arg1, encoded_arg_string, arg3)\
@@ -1465,24 +1510,6 @@ tracepoint(CLOG_CONNECTION_C, ForceCidUpdate , arg1);\
 #ifndef _clog_5_ARGS_TRACE_TestTPSet
 #define _clog_5_ARGS_TRACE_TestTPSet(uniqueId, arg1, encoded_arg_string, arg3, arg4)\
 tracepoint(CLOG_CONNECTION_C, TestTPSet , arg1, arg3, arg4);\
-
-#endif
-
-
-
-
-/*----------------------------------------------------------
-// Decoder Ring for AbandonInternallyClosed
-// [conn][%p] Abandoning internal, closed connection
-// QuicTraceLogConnVerbose(
-            AbandonInternallyClosed,
-            Connection,
-            "Abandoning internal, closed connection");
-// arg1 = arg1 = Connection = arg1
-----------------------------------------------------------*/
-#ifndef _clog_3_ARGS_TRACE_AbandonInternallyClosed
-#define _clog_3_ARGS_TRACE_AbandonInternallyClosed(uniqueId, arg1, encoded_arg_string)\
-tracepoint(CLOG_CONNECTION_C, AbandonInternallyClosed , arg1);\
 
 #endif
 
@@ -1634,26 +1661,6 @@ tracepoint(CLOG_CONNECTION_C, ConnInitializeComplete , arg2);\
 
 
 /*----------------------------------------------------------
-// Decoder Ring for ConnUnregistered
-// [conn][%p] Unregistered from %p
-// QuicTraceEvent(
-            ConnUnregistered,
-            "[conn][%p] Unregistered from %p",
-            Connection,
-            Connection->Registration);
-// arg2 = arg2 = Connection = arg2
-// arg3 = arg3 = Connection->Registration = arg3
-----------------------------------------------------------*/
-#ifndef _clog_4_ARGS_TRACE_ConnUnregistered
-#define _clog_4_ARGS_TRACE_ConnUnregistered(uniqueId, encoded_arg_string, arg2, arg3)\
-tracepoint(CLOG_CONNECTION_C, ConnUnregistered , arg2, arg3);\
-
-#endif
-
-
-
-
-/*----------------------------------------------------------
 // Decoder Ring for ConnDestroyed
 // [conn][%p] Destroyed
 // QuicTraceEvent(
@@ -1683,6 +1690,26 @@ tracepoint(CLOG_CONNECTION_C, ConnDestroyed , arg2);\
 #ifndef _clog_3_ARGS_TRACE_ConnHandleClosed
 #define _clog_3_ARGS_TRACE_ConnHandleClosed(uniqueId, encoded_arg_string, arg2)\
 tracepoint(CLOG_CONNECTION_C, ConnHandleClosed , arg2);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for ConnUnregistered
+// [conn][%p] Unregistered from %p
+// QuicTraceEvent(
+            ConnUnregistered,
+            "[conn][%p] Unregistered from %p",
+            Connection,
+            Connection->Registration);
+// arg2 = arg2 = Connection = arg2
+// arg3 = arg3 = Connection->Registration = arg3
+----------------------------------------------------------*/
+#ifndef _clog_4_ARGS_TRACE_ConnUnregistered
+#define _clog_4_ARGS_TRACE_ConnUnregistered(uniqueId, encoded_arg_string, arg2, arg3)\
+tracepoint(CLOG_CONNECTION_C, ConnUnregistered , arg2, arg3);\
 
 #endif
 
@@ -1874,35 +1901,15 @@ tracepoint(CLOG_CONNECTION_C, ConnSetTimer , arg2, arg3, arg4);\
 
 
 /*----------------------------------------------------------
-// Decoder Ring for ConnCancelTimer
-// [conn][%p] Canceling %hhu
+// Decoder Ring for ConnExpiredTimer
+// [conn][%p] %hhu expired
 // QuicTraceEvent(
-                ConnCancelTimer,
-                "[conn][%p] Canceling %hhu",
+                ConnExpiredTimer,
+                "[conn][%p] %hhu expired",
                 Connection,
                 (uint8_t)Type);
 // arg2 = arg2 = Connection = arg2
 // arg3 = arg3 = (uint8_t)Type = arg3
-----------------------------------------------------------*/
-#ifndef _clog_4_ARGS_TRACE_ConnCancelTimer
-#define _clog_4_ARGS_TRACE_ConnCancelTimer(uniqueId, encoded_arg_string, arg2, arg3)\
-tracepoint(CLOG_CONNECTION_C, ConnCancelTimer , arg2, arg3);\
-
-#endif
-
-
-
-
-/*----------------------------------------------------------
-// Decoder Ring for ConnExpiredTimer
-// [conn][%p] %hhu expired
-// QuicTraceEvent(
-            ConnExpiredTimer,
-            "[conn][%p] %hhu expired",
-            Connection,
-            (uint8_t)Temp[j].Type);
-// arg2 = arg2 = Connection = arg2
-// arg3 = arg3 = (uint8_t)Temp[j].Type = arg3
 ----------------------------------------------------------*/
 #ifndef _clog_4_ARGS_TRACE_ConnExpiredTimer
 #define _clog_4_ARGS_TRACE_ConnExpiredTimer(uniqueId, encoded_arg_string, arg2, arg3)\
@@ -1917,10 +1924,10 @@ tracepoint(CLOG_CONNECTION_C, ConnExpiredTimer , arg2, arg3);\
 // Decoder Ring for ConnExecTimerOper
 // [conn][%p] Execute: %u
 // QuicTraceEvent(
-                ConnExecTimerOper,
-                "[conn][%p] Execute: %u",
-                Connection,
-                QUIC_CONN_TIMER_ACK_DELAY);
+                    ConnExecTimerOper,
+                    "[conn][%p] Execute: %u",
+                    Connection,
+                    QUIC_CONN_TIMER_ACK_DELAY);
 // arg2 = arg2 = Connection = arg2
 // arg3 = arg3 = QUIC_CONN_TIMER_ACK_DELAY = arg3
 ----------------------------------------------------------*/
@@ -2099,17 +2106,35 @@ tracepoint(CLOG_CONNECTION_C, ConnPacketRecv , arg2, arg3, arg4, arg5);\
 
 
 /*----------------------------------------------------------
+// Decoder Ring for ConnDelayCloseApplicationError
+// [conn][%p] Received APPLICATION_ERROR error, delaying close in expectation of a 1-RTT CONNECTION_CLOSE frame.
+// QuicTraceEvent(
+                    ConnDelayCloseApplicationError,
+                    "[conn][%p] Received APPLICATION_ERROR error, delaying close in expectation of a 1-RTT CONNECTION_CLOSE frame.",
+                    Connection);
+// arg2 = arg2 = Connection = arg2
+----------------------------------------------------------*/
+#ifndef _clog_3_ARGS_TRACE_ConnDelayCloseApplicationError
+#define _clog_3_ARGS_TRACE_ConnDelayCloseApplicationError(uniqueId, encoded_arg_string, arg2)\
+tracepoint(CLOG_CONNECTION_C, ConnDelayCloseApplicationError , arg2);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
 // Decoder Ring for ConnRecvUdpDatagrams
 // [conn][%p] Recv %u UDP datagrams, %u bytes
 // QuicTraceEvent(
             ConnRecvUdpDatagrams,
             "[conn][%p] Recv %u UDP datagrams, %u bytes",
             Connection,
-            DatagramChainCount,
-            DatagramChainByteCount);
+            PacketChainCount,
+            PacketChainByteCount);
 // arg2 = arg2 = Connection = arg2
-// arg3 = arg3 = DatagramChainCount = arg3
-// arg4 = arg4 = DatagramChainByteCount = arg4
+// arg3 = arg3 = PacketChainCount = arg3
+// arg4 = arg4 = PacketChainByteCount = arg4
 ----------------------------------------------------------*/
 #ifndef _clog_5_ARGS_TRACE_ConnRecvUdpDatagrams
 #define _clog_5_ARGS_TRACE_ConnRecvUdpDatagrams(uniqueId, encoded_arg_string, arg2, arg3, arg4)\

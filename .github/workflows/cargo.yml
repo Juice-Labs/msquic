@@ -15,34 +15,55 @@ permissions: read-all
 jobs:
   cargo:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-latest-xlarge]
+        features: ["", "--features static", "--features schannel", "--features schannel,static", "--features overwrite"]
+        exclude:
+          - os: ubuntu-latest
+            features: "--features schannel"
+          - os: ubuntu-latest
+            features: "--features schannel,static"
+          - os: macos-latest
+            features: "--features schannel"
+          - os: macos-latest
+            features: "--features schannel,static"
+          - os: macos-latest-xlarge
+            features: "--features schannel"
+          - os: macos-latest-xlarge
+            features: "--features schannel,static"
     runs-on: ${{ matrix.os }}
     name: Cargo
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@8ca2b8b2ece13480cda6dacd3511b49857a23c09
+      uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
       with:
         egress-policy: audit
     - name: Checkout repository
-      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
     - name: Prepare Machine
       run: scripts/prepare-machine.ps1 -Tls openssl -ForBuild
       shell: pwsh
     - name: Install Perl
       if: runner.os == 'Windows'
-      uses: shogo82148/actions-setup-perl@35426a57f184a35daee329bb17ae49332ff8a422
+      uses: shogo82148/actions-setup-perl@98dfedee230bcf1ee68d5b021931fc8d63f2016e
       with:
         perl-version: '5.34'
     - name: Install NASM
       if: runner.os == 'Windows'
-      uses: ilammy/setup-nasm@321e6ed62a1fc77024a3bd853deb33645e8b22c4
+      uses: ilammy/setup-nasm@13cbeb366c45c4379d3478cdcbadd8295feb5028
     - name: Install Cargo
       if: runner.os == 'Linux'
       run: curl https://sh.rustup.rs -sSf | sh -s -- -y
+    - name: Cargo fmt
+      run: cargo fmt --all -- --check
+    - name: Cargo clippy
+      run: cargo clippy --all-targets -- -D warnings
     - name: Cargo build
-      run: cargo build --all
+      run: cargo build --all ${{ matrix.features }}
+    - name: Check all generated files with git
+      run: git diff --exit-code
     - name: Cargo test
-      run: cargo test --all
+      run: cargo test --all ${{ matrix.features }}
     - name: Cargo Publish (dry run)
-      run: cargo publish --dry-run
+      run: cargo publish --dry-run --allow-dirty

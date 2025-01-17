@@ -7,6 +7,7 @@ set(SOURCES
     PacketNumberTest.cpp
     PartitionTest.cpp
     RangeTest.cpp
+    RecvBufferTest.cpp
     SettingsTest.cpp
     SlidingWindowExtremumTest.cpp
     SpinFrame.cpp
@@ -26,7 +27,7 @@ set_property(TARGET msquiccoretest APPEND PROPERTY BUILD_RPATH "$ORIGIN")
 target_link_libraries(msquiccoretest msquic)
 
 if (BUILD_SHARED_LIBS)
-    target_link_libraries(msquiccoretest core platform)
+    target_link_libraries(msquiccoretest core msquic_platform)
 endif()
 
 target_link_libraries(msquiccoretest inc gtest warnings logging base_link)

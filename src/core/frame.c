@@ -421,7 +421,7 @@ QuicReliableResetFrameEncode(
         sizeof(uint8_t) +     // Type
         QuicVarIntSize(Frame->ErrorCode) +
         QuicVarIntSize(Frame->StreamID) +
-        QuicVarIntSize(Frame->FinalSize) + 
+        QuicVarIntSize(Frame->FinalSize) +
         QuicVarIntSize(Frame->ReliableSize);
 
     if (BufferLength < *Offset + RequiredLength) {
@@ -1234,19 +1234,6 @@ QuicDatagramFrameDecode(
     return TRUE;
 }
 
-typedef struct QUIC_ACK_FREQUENCY_EXTRAS {
-
-    union {
-        struct {
-            uint8_t IgnoreOrder : 1;
-            uint8_t IgnoreCE    : 1;
-            uint8_t Reserved    : 6;
-        };
-        uint8_t Value;
-    };
-
-} QUIC_ACK_FREQUENCY_EXTRAS;
-
 _Success_(return != FALSE)
 BOOLEAN
 QuicAckFrequencyFrameEncode(
@@ -1259,27 +1246,20 @@ QuicAckFrequencyFrameEncode(
     uint16_t RequiredLength =
         QuicVarIntSize(QUIC_FRAME_ACK_FREQUENCY) +
         QuicVarIntSize(Frame->SequenceNumber) +
-        QuicVarIntSize(Frame->PacketTolerance) +
-        QuicVarIntSize(Frame->UpdateMaxAckDelay) +
-        sizeof(QUIC_ACK_FREQUENCY_EXTRAS);
+        QuicVarIntSize(Frame->AckElicitingThreshold) +
+        QuicVarIntSize(Frame->RequestedMaxAckDelay) +
+        QuicVarIntSize(Frame->ReorderingThreshold);
 
     if (BufferLength < *Offset + RequiredLength) {
         return FALSE;
     }
 
-    CXPLAT_DBG_ASSERT(Frame->IgnoreOrder <= 1); // IgnoreOrder should only be 0 or 1.
-    CXPLAT_DBG_ASSERT(Frame->IgnoreCE <= 1);    // IgnoreCE should only be 0 or 1.
-
-    QUIC_ACK_FREQUENCY_EXTRAS Extras = { .Value = 0 };
-    Extras.IgnoreOrder = Frame->IgnoreOrder;
-    Extras.IgnoreCE = Frame->IgnoreCE;
-
     Buffer = Buffer + *Offset;
     Buffer = QuicVarIntEncode(QUIC_FRAME_ACK_FREQUENCY, Buffer);
     Buffer = QuicVarIntEncode(Frame->SequenceNumber, Buffer);
-    Buffer = QuicVarIntEncode(Frame->PacketTolerance, Buffer);
-    Buffer = QuicVarIntEncode(Frame->UpdateMaxAckDelay, Buffer);
-    QuicUint8Encode(Extras.Value, Buffer);
+    Buffer = QuicVarIntEncode(Frame->AckElicitingThreshold, Buffer);
+    Buffer = QuicVarIntEncode(Frame->RequestedMaxAckDelay, Buffer);
+    QuicVarIntEncode(Frame->ReorderingThreshold, Buffer);
     *Offset += RequiredLength;
 
     return TRUE;
@@ -1295,15 +1275,54 @@ QuicAckFrequencyFrameDecode(
     _Out_ QUIC_ACK_FREQUENCY_EX* Frame
     )
 {
-    QUIC_ACK_FREQUENCY_EXTRAS Extras;
     if (!QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->SequenceNumber) ||
-        !QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->PacketTolerance) ||
-        !QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->UpdateMaxAckDelay) ||
-        !QuicUint8tDecode(BufferLength, Buffer, Offset, &Extras.Value)) {
+        !QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->AckElicitingThreshold) ||
+        !QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->RequestedMaxAckDelay) ||
+        !QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->ReorderingThreshold)) {
         return FALSE;
     }
-    Frame->IgnoreOrder = Extras.IgnoreOrder;
-    Frame->IgnoreCE = Extras.IgnoreCE;
+    return TRUE;
+}
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicTimestampFrameEncode(
+    _In_ const QUIC_TIMESTAMP_EX * const Frame,
+    _Inout_ uint16_t* Offset,
+    _In_ uint16_t BufferLength,
+    _Out_writes_to_(BufferLength, *Offset) uint8_t* Buffer
+    )
+{
+    uint16_t RequiredLength =
+        QuicVarIntSize(QUIC_FRAME_TIMESTAMP) +
+        QuicVarIntSize(Frame->Timestamp);
+
+    if (BufferLength < *Offset + RequiredLength) {
+        return FALSE;
+    }
+
+    Buffer = Buffer + *Offset;
+    Buffer = QuicVarIntEncode(QUIC_FRAME_TIMESTAMP, Buffer);
+    QuicVarIntEncode(Frame->Timestamp, Buffer);
+    *Offset += RequiredLength;
+
+    return TRUE;
+}
+
+_Success_(return != FALSE)
+BOOLEAN
+QuicTimestampFrameDecode(
+    _In_ uint16_t BufferLength,
+    _In_reads_bytes_(BufferLength)
+        const uint8_t * const Buffer,
+    _Inout_ uint16_t* Offset,
+    _Out_ QUIC_TIMESTAMP_EX* Frame
+    )
+{
+    if (!QuicVarIntDecode(BufferLength, Buffer, Offset, &Frame->Timestamp)) {
+        return FALSE;
+    }
+
     return TRUE;
 }
 
@@ -1921,15 +1940,14 @@ QuicFrameLog(
 
         QuicTraceLogVerbose(
             FrameLogAckFrequency,
-            "[%c][%cX][%llu]   ACK_FREQUENCY SeqNum:%llu PktTolerance:%llu MaxAckDelay:%llu IgnoreOrder:%hhu IgnoreCE:%hhu",
+            "[%c][%cX][%llu]   ACK_FREQUENCY SeqNum:%llu AckElicitThreshold:%llu MaxAckDelay:%llu ReorderThreshold:%llu",
             PtkConnPre(Connection),
             PktRxPre(Rx),
             PacketNumber,
             Frame.SequenceNumber,
-            Frame.PacketTolerance,
-            Frame.UpdateMaxAckDelay,
-            Frame.IgnoreOrder,
-            Frame.IgnoreCE);
+            Frame.AckElicitingThreshold,
+            Frame.RequestedMaxAckDelay,
+            Frame.ReorderingThreshold);
         break;
     }
 
@@ -1940,6 +1958,53 @@ QuicFrameLog(
             PtkConnPre(Connection),
             PktRxPre(Rx),
             PacketNumber);
+        break;
+    }
+
+    case QUIC_FRAME_TIMESTAMP: {
+        QUIC_TIMESTAMP_EX Frame;
+        if (!QuicTimestampFrameDecode(PacketLength, Packet, Offset, &Frame)) {
+            QuicTraceLogVerbose(
+                FrameLogTimestampInvalid,
+                "[%c][%cX][%llu]   TIMESTAMP [Invalid]",
+                PtkConnPre(Connection),
+                PktRxPre(Rx),
+                PacketNumber);
+            return FALSE;
+        }
+
+        QuicTraceLogVerbose(
+            FrameLogTimestamp,
+            "[%c][%cX][%llu]   TIMESTAMP %llu",
+            PtkConnPre(Connection),
+            PktRxPre(Rx),
+            PacketNumber,
+            Frame.Timestamp);
+        break;
+    }
+
+    case QUIC_FRAME_RELIABLE_RESET_STREAM: {
+        QUIC_RELIABLE_RESET_STREAM_EX Frame;
+        if (!QuicReliableResetFrameDecode(PacketLength, Packet, Offset, &Frame)) {
+            QuicTraceLogVerbose(
+                FrameLogReliableResetStreamInvalid,
+                "[%c][%cX][%llu]   RELIABLE_RESET_STREAM [Invalid]",
+                PtkConnPre(Connection),
+                PktRxPre(Rx),
+                PacketNumber);
+            return FALSE;
+        }
+
+        QuicTraceLogVerbose(
+            FrameLogReliableResetStream,
+            "[%c][%cX][%llu]   RELIABLE_RESET_STREAM ID:%llu ErrorCode:0x%llX FinalSize:%llu ReliableSize:%llu",
+            PtkConnPre(Connection),
+            PktRxPre(Rx),
+            PacketNumber,
+            Frame.StreamID,
+            Frame.ErrorCode,
+            Frame.FinalSize,
+            Frame.ReliableSize);
         break;
     }
 

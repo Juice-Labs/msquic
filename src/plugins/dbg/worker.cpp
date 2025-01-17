@@ -23,13 +23,12 @@ EXT_COMMAND(
     Dml("\n<b>WORKER</b> (<link cmd=\"dt msquic!QUIC_WORKER 0x%I64X\">raw</link>)\n"
         "\n"
         "\tState               %s\n"
-        "\tIdeal Processor     %u\n"
-        "\tThread              0x%X (<link cmd=\"~~[0x%X]s\">UM</link>/<link cmd=\"!thread 0x%I64X\">KM</link>)\n",
+        "\tPartition           %u\n"
+        "\tThread              <link cmd=\"!thread 0x%I64X\">0x%X</link>\n",
         Work.Addr,
         Work.StateStr(),
-        Work.IdealProcessor(),
-        Work.ThreadID(),
-        Work.ThreadID(),
+        Work.PartitionIndex(),
+        Work.Thread(),
         Work.Thread());
 
     Dml("\n<u>QUEUE</u>\n"

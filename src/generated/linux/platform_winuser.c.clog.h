@@ -82,11 +82,11 @@ tracepoint(CLOG_PLATFORM_WINUSER_C, WindowsUserProcessorStateV3 , arg2, arg3, ar
 
 
 /*----------------------------------------------------------
-// Decoder Ring for ProcessorInfoV2
-// [ dll] Proc[%u] Group[%hu] Index[%u] Active=%hhu
+// Decoder Ring for ProcessorInfoV3
+// [ dll] Proc[%u] Group[%hu] Index[%hhu] Active=%hhu
 // QuicTraceLogInfo(
-                    ProcessorInfoV2,
-                    "[ dll] Proc[%u] Group[%hu] Index[%u] Active=%hhu",
+                    ProcessorInfoV3,
+                    "[ dll] Proc[%u] Group[%hu] Index[%hhu] Active=%hhu",
                     Proc,
                     (uint16_t)Group,
                     CxPlatProcessorInfo[Proc].Index,
@@ -96,9 +96,9 @@ tracepoint(CLOG_PLATFORM_WINUSER_C, WindowsUserProcessorStateV3 , arg2, arg3, ar
 // arg4 = arg4 = CxPlatProcessorInfo[Proc].Index = arg4
 // arg5 = arg5 = (uint8_t)!!(CxPlatProcessorGroupInfo[Group].Mask & (1ULL << CxPlatProcessorInfo[Proc].Index)) = arg5
 ----------------------------------------------------------*/
-#ifndef _clog_6_ARGS_TRACE_ProcessorInfoV2
-#define _clog_6_ARGS_TRACE_ProcessorInfoV2(uniqueId, encoded_arg_string, arg2, arg3, arg4, arg5)\
-tracepoint(CLOG_PLATFORM_WINUSER_C, ProcessorInfoV2 , arg2, arg3, arg4, arg5);\
+#ifndef _clog_6_ARGS_TRACE_ProcessorInfoV3
+#define _clog_6_ARGS_TRACE_ProcessorInfoV3(uniqueId, encoded_arg_string, arg2, arg3, arg4, arg5)\
+tracepoint(CLOG_PLATFORM_WINUSER_C, ProcessorInfoV3 , arg2, arg3, arg4, arg5);\
 
 #endif
 
@@ -162,26 +162,6 @@ tracepoint(CLOG_PLATFORM_WINUSER_C, WindowsUserUninitialized );\
 
 
 /*----------------------------------------------------------
-// Decoder Ring for AllocFailure
-// Allocation of '%s' failed. (%llu bytes)
-// QuicTraceEvent(
-            AllocFailure,
-            "Allocation of '%s' failed. (%llu bytes)",
-            "CxPlatProcessorInfo",
-            MaxProcessorCount * sizeof(CXPLAT_PROCESSOR_INFO));
-// arg2 = arg2 = "CxPlatProcessorInfo" = arg2
-// arg3 = arg3 = MaxProcessorCount * sizeof(CXPLAT_PROCESSOR_INFO) = arg3
-----------------------------------------------------------*/
-#ifndef _clog_4_ARGS_TRACE_AllocFailure
-#define _clog_4_ARGS_TRACE_AllocFailure(uniqueId, encoded_arg_string, arg2, arg3)\
-tracepoint(CLOG_PLATFORM_WINUSER_C, AllocFailure , arg2, arg3);\
-
-#endif
-
-
-
-
-/*----------------------------------------------------------
 // Decoder Ring for LibraryError
 // [ lib] ERROR, %s.
 // QuicTraceEvent(
@@ -205,14 +185,34 @@ tracepoint(CLOG_PLATFORM_WINUSER_C, LibraryError , arg2);\
 // QuicTraceEvent(
             LibraryErrorStatus,
             "[ lib] ERROR, %u, %s.",
-            Error,
-            "GlobalMemoryStatusEx failed");
-// arg2 = arg2 = Error = arg2
-// arg3 = arg3 = "GlobalMemoryStatusEx failed" = arg3
+            ActiveProcessorCount,
+            "Invalid active processor count");
+// arg2 = arg2 = ActiveProcessorCount = arg2
+// arg3 = arg3 = "Invalid active processor count" = arg3
 ----------------------------------------------------------*/
 #ifndef _clog_4_ARGS_TRACE_LibraryErrorStatus
 #define _clog_4_ARGS_TRACE_LibraryErrorStatus(uniqueId, encoded_arg_string, arg2, arg3)\
 tracepoint(CLOG_PLATFORM_WINUSER_C, LibraryErrorStatus , arg2, arg3);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for AllocFailure
+// Allocation of '%s' failed. (%llu bytes)
+// QuicTraceEvent(
+            AllocFailure,
+            "Allocation of '%s' failed. (%llu bytes)",
+            "CxPlatProcessorInfo",
+            ActiveProcessorCount * sizeof(CXPLAT_PROCESSOR_INFO));
+// arg2 = arg2 = "CxPlatProcessorInfo" = arg2
+// arg3 = arg3 = ActiveProcessorCount * sizeof(CXPLAT_PROCESSOR_INFO) = arg3
+----------------------------------------------------------*/
+#ifndef _clog_4_ARGS_TRACE_AllocFailure
+#define _clog_4_ARGS_TRACE_AllocFailure(uniqueId, encoded_arg_string, arg2, arg3)\
+tracepoint(CLOG_PLATFORM_WINUSER_C, AllocFailure , arg2, arg3);\
 
 #endif
 

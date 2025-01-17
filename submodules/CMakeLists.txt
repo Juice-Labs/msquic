@@ -20,7 +20,7 @@ if(QUIC_TLS STREQUAL "openssl" OR QUIC_TLS STREQUAL "openssl3")
         set(QUIC_OPENSSL openssl)
     else()
         set(QUIC_USE_OPENSSL3 ON)
-        message(STATUS "Configuring for OpenSSL 3.0")
+        message(STATUS "Configuring for OpenSSL 3.x")
         set(EXPECTED_OPENSSL_VERSION 3.0)
         set(QUIC_OPENSSL openssl3)
     endif()
@@ -62,7 +62,7 @@ if (WIN32)
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN64-ARM")
         elseif (${SYSTEM_PROCESSOR} STREQUAL "arm")
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN32-ARM")
-        elseif (${SYSTEM_PROCESSOR} STREQUAL "win32")
+        elseif (${SYSTEM_PROCESSOR} STREQUAL "win32" OR ${SYSTEM_PROCESSOR} STREQUAL "x86")
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN32-ONECORE")
         elseif (${SYSTEM_PROCESSOR} STREQUAL "x64" OR ${SYSTEM_PROCESSOR} STREQUAL "amd64")
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN64A-ONECORE")
@@ -75,7 +75,7 @@ if (WIN32)
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN64-ARM")
         elseif (${SYSTEM_PROCESSOR} STREQUAL "arm")
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN32-ARM")
-        elseif (${SYSTEM_PROCESSOR} STREQUAL "win32")
+        elseif (${SYSTEM_PROCESSOR} STREQUAL "win32" OR ${SYSTEM_PROCESSOR} STREQUAL "x86")
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN32")
         elseif (${SYSTEM_PROCESSOR} STREQUAL "x64" OR ${SYSTEM_PROCESSOR} STREQUAL "amd64")
             set(QUIC_OPENSSL_WIN_ARCH "VC-WIN64A")
@@ -157,8 +157,9 @@ if (WIN32)
     target_include_directories(
         OpenSSLQuic
         INTERFACE
-        $<$<CONFIG:Debug>:${OPENSSL_DIR}/debug/include>
-        $<$<NOT:$<CONFIG:Debug>>:${OPENSSL_DIR}/release/include>
+        $<BUILD_INTERFACE:$<$<CONFIG:Debug>:${OPENSSL_DIR}/debug/include>
+        $<$<NOT:$<CONFIG:Debug>>:${OPENSSL_DIR}/release/include>>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     )
     target_link_libraries(
         OpenSSLQuic
@@ -327,7 +328,8 @@ else()
     target_include_directories(
         OpenSSLQuic
         INTERFACE
-        ${OPENSSL_DIR}/include
+        $<BUILD_INTERFACE:${OPENSSL_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     )
 
     target_link_libraries(
@@ -343,7 +345,11 @@ else()
             # We cannot use VERSION_GREATER as 3.0 would work for 1.1.1 but they are not compatible.
             string(FIND ${OPENSSL_VERSION} "." VERSIONLEN REVERSE)
             string(SUBSTRING ${OPENSSL_VERSION} 0 ${VERSIONLEN}  OPENSSL_MAJORMINOR)
-            if (OPENSSL_VERSION VERSION_EQUAL EXPECTED_OPENSSL_VERSION OR OPENSSL_MAJORMINOR VERSION_EQUAL EXPECTED_OPENSSL_VERSION)
+            string(FIND ${OPENSSL_VERSION} "." VERSIONLEN)
+            string(SUBSTRING ${OPENSSL_VERSION} 0 ${VERSIONLEN}  OPENSSL_MAJOR)
+            if (OPENSSL_VERSION VERSION_EQUAL EXPECTED_OPENSSL_VERSION OR OPENSSL_MAJORMINOR VERSION_EQUAL EXPECTED_OPENSSL_VERSION OR 
+                # 3.1 is compatible with 3.0, 3.2 and beyond maybe as well.
+                (EXPECTED_OPENSSL_VERSION VERSION_EQUAL "3.0" AND OPENSSL_MAJOR EQUAL "3"))
                 target_link_libraries(OpenSSLQuic INTERFACE OpenSSL::Crypto)
             else()
                 message(FATAL_ERROR "OpenSSL ${EXPECTED_OPENSSL_VERSION} not found, found ${OPENSSL_VERSION}")

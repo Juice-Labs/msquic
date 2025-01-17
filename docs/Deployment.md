@@ -22,7 +22,7 @@ Generally, for any existing TCP based deployments that are adding QUIC support, 
 - NAT bindings for UDP flows on the internet generally timeout much quicker than TCP; resulting in flow changes much more often.
   - QUIC, as a protocol, is able to survive these changes, unlike TCP.
 
-For more details, please see the [Manageability draft](https://tools.ietf.org/html/draft-ietf-quic-manageability).
+For more details, please see the [Manageability RFC](https://datatracker.ietf.org/doc/html/rfc9312).
 
 # Configuration
 
@@ -136,6 +136,11 @@ The threshold mentioned above is currently tracked as a percentage of total avai
 MsQuic uses worker threads internally to execute the QUIC protocol logic. For each worker thread, MsQuic tracks the average queue delay for any work done on one of these threads. This queue delay is simply the time from when the work is added to the queue to when the work is removed from the queue. If this delay hits a certain threshold, then existing connections can start to suffer (i.e. spurious packet loss, decreased throughput, or even connection failures). In order to prevent this, new connections are rejected with the SERVER_BUSY error, when this threshold is reached.
 
 The queue delay threshold can be configured via the `MaxWorkerQueueDelayMs` setting.
+
+## Version Negotiation
+
+MsQuic supports QUIC protocol versions 1 and 2, and the version negotiation extension. By default, version negotiation is off, but can be enabled at runtime.
+Instructions for configuring and deploying QUIC versions are at [Versions](Versions.md).
 
 # Diagnostics
 

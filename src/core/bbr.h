@@ -78,7 +78,7 @@ typedef struct QUIC_CONGESTION_CONTROL_BBR {
     // If TRUE, there has been at least one MinRtt sample
     //
     BOOLEAN MinRttTimestampValid: 1;
-    
+
     //
     // The size of the initial congestion window in packets
     //
@@ -168,13 +168,13 @@ typedef struct QUIC_CONGESTION_CONTROL_BBR {
     uint64_t CycleStart;
 
     //
-    // Receiving acknowledgement of a packet after EndoOfRoundTrip will
+    // Receiving acknowledgment of a packet after EndoOfRoundTrip will
     // indicate the current round trip is ended
     //
     uint64_t EndOfRoundTrip;
 
     //
-    // Receiving acknowledgement of a packet after EndoOfRecovery will cause
+    // Receiving acknowledgment of a packet after EndoOfRecovery will cause
     // BBR to exit the recovery mode
     //
     uint64_t EndOfRecovery;
@@ -201,7 +201,7 @@ typedef struct QUIC_CONGESTION_CONTROL_BBR {
     QUIC_SLIDING_WINDOW_EXTREMUM MaxAckHeightFilter;
     QUIC_SLIDING_WINDOW_EXTREMUM_ENTRY MaxAckHeightFilterEntries[kBbrDefaultFilterCapacity];
 
-    uint32_t MinRtt; // microseconds
+    uint64_t MinRtt; // microseconds
 
     //
     // Time when MinRtt was sampled. Only valid if MinRttTimestampValid is set.

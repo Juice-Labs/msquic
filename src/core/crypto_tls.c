@@ -63,10 +63,11 @@ typedef enum eSniNameType {
 #define QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE                  32              // varint
 #define QUIC_TP_ID_DISABLE_1RTT_ENCRYPTION                  0xBAAD          // N/A
 #define QUIC_TP_ID_VERSION_NEGOTIATION_EXT                  0x11            // Blob
-#define QUIC_TP_ID_MIN_ACK_DELAY                            0xFF03DE1AULL   // varint
+#define QUIC_TP_ID_MIN_ACK_DELAY                            0xFF04DE1BULL   // varint
 #define QUIC_TP_ID_CIBIR_ENCODING                           0x1000          // {varint, varint}
 #define QUIC_TP_ID_GREASE_QUIC_BIT                          0x2AB2          // N/A
 #define QUIC_TP_ID_RELIABLE_RESET_ENABLED                   0x17f7586d2cb570   // varint
+#define QUIC_TP_ID_ENABLE_TIMESTAMP                         0x7158          // varint
 
 BOOLEAN
 QuicTpIdIsReserved(
@@ -347,6 +348,8 @@ QuicCryptoTlsReadExtensions(
       } Extension;
     */
 
+    BOOLEAN FoundSNI = FALSE;
+    BOOLEAN FoundALPN = FALSE;
     BOOLEAN FoundTransportParameters = FALSE;
     while (BufferLength) {
         //
@@ -376,23 +379,49 @@ QuicCryptoTlsReadExtensions(
         }
 
         if (ExtType == TlsExt_ServerName) {
+            if (FoundSNI) {
+                QuicTraceEvent(
+                    ConnError,
+                    "[conn][%p] ERROR, %s.",
+                    Connection,
+                    "Duplicate SNI extension present");
+                return QUIC_STATUS_INVALID_PARAMETER;
+            }
             QUIC_STATUS Status =
                 QuicCryptoTlsReadSniExtension(
                     Connection, Buffer, ExtLen, Info);
             if (QUIC_FAILED(Status)) {
                 return Status;
             }
+            FoundSNI = TRUE;
 
         } else if (ExtType == TlsExt_AppProtocolNegotiation) {
+            if (FoundALPN) {
+                QuicTraceEvent(
+                    ConnError,
+                    "[conn][%p] ERROR, %s.",
+                    Connection,
+                    "Duplicate ALPN extension present");
+                return QUIC_STATUS_INVALID_PARAMETER;
+            }
             QUIC_STATUS Status =
                 QuicCryptoTlsReadAlpnExtension(
                     Connection, Buffer, ExtLen, Info);
             if (QUIC_FAILED(Status)) {
                 return Status;
             }
+            FoundALPN = TRUE;
 
         } else if (Connection->Stats.QuicVersion != QUIC_VERSION_DRAFT_29) {
             if (ExtType == TLS_EXTENSION_TYPE_QUIC_TRANSPORT_PARAMETERS) {
+                if (FoundTransportParameters) {
+                    QuicTraceEvent(
+                        ConnError,
+                        "[conn][%p] ERROR, %s.",
+                        Connection,
+                        "Duplicate QUIC TP extension present");
+                    return QUIC_STATUS_INVALID_PARAMETER;
+                }
                 if (!QuicCryptoTlsDecodeTransportParameters(
                         Connection,
                         FALSE,
@@ -406,6 +435,14 @@ QuicCryptoTlsReadExtensions(
 
         } else {
             if (ExtType == TLS_EXTENSION_TYPE_QUIC_TRANSPORT_PARAMETERS_DRAFT) {
+                if (FoundTransportParameters) {
+                    QuicTraceEvent(
+                        ConnError,
+                        "[conn][%p] ERROR, %s.",
+                        Connection,
+                        "Duplicate QUIC (draft) TP extension present");
+                    return QUIC_STATUS_INVALID_PARAMETER;
+                }
                 if (!QuicCryptoTlsDecodeTransportParameters(
                         Connection,
                         FALSE,
@@ -857,6 +894,16 @@ QuicCryptoTlsEncodeTransportParameters(
                 QUIC_TP_ID_RELIABLE_RESET_ENABLED,
                 0);
     }
+    if (TransportParams->Flags & (QUIC_TP_FLAG_TIMESTAMP_SEND_ENABLED | QUIC_TP_FLAG_TIMESTAMP_RECV_ENABLED)) {
+        const uint32_t value =
+            (TransportParams->Flags &
+             (QUIC_TP_FLAG_TIMESTAMP_SEND_ENABLED | QUIC_TP_FLAG_TIMESTAMP_RECV_ENABLED))
+            >> QUIC_TP_FLAG_TIMESTAMP_SHIFT;
+        RequiredTPLen +=
+            TlsTransportParamLength(
+                QUIC_TP_ID_ENABLE_TIMESTAMP,
+                QuicVarIntSize(value));
+    }
     if (TestParam != NULL) {
         RequiredTPLen +=
             TlsTransportParamLength(
@@ -1181,7 +1228,23 @@ QuicCryptoTlsEncodeTransportParameters(
         QuicTraceLogConnVerbose(
             EncodeTPReliableReset,
             Connection,
-            "TP: Encode Reliable Reset");
+            "TP: Reliable Reset");
+    }
+    if (TransportParams->Flags & (QUIC_TP_FLAG_TIMESTAMP_SEND_ENABLED | QUIC_TP_FLAG_TIMESTAMP_RECV_ENABLED)) {
+        const uint32_t value =
+            (TransportParams->Flags &
+             (QUIC_TP_FLAG_TIMESTAMP_SEND_ENABLED | QUIC_TP_FLAG_TIMESTAMP_RECV_ENABLED))
+            >> QUIC_TP_FLAG_TIMESTAMP_SHIFT;
+        TPBuf =
+            TlsWriteTransportParamVarInt(
+                QUIC_TP_ID_ENABLE_TIMESTAMP,
+                value,
+                TPBuf);
+        QuicTraceLogConnVerbose(
+            EncodeTPTimestamp,
+            Connection,
+            "TP: Timestamp (%u)",
+            value);
     }
     if (TestParam != NULL) {
         TPBuf =
@@ -1227,7 +1290,7 @@ QuicCryptoTlsDecodeTransportParameters( // NOLINT(readability-function-size, goo
     _In_reads_(TPLen)
         const uint8_t* TPBuf,
     _In_ uint16_t TPLen,
-    _Out_ QUIC_TRANSPORT_PARAMETERS* TransportParams
+    _Inout_ QUIC_TRANSPORT_PARAMETERS* TransportParams
     )
 {
     BOOLEAN Result = FALSE;
@@ -1236,6 +1299,9 @@ QuicCryptoTlsDecodeTransportParameters( // NOLINT(readability-function-size, goo
 
     UNREFERENCED_PARAMETER(Connection);
 
+    if (TransportParams->VersionInfo) {
+        CXPLAT_FREE(TransportParams->VersionInfo, QUIC_POOL_VERSION_INFO);
+    }
     CxPlatZeroMemory(TransportParams, sizeof(QUIC_TRANSPORT_PARAMETERS));
     TransportParams->MaxUdpPayloadSize = QUIC_TP_MAX_PACKET_SIZE_DEFAULT;
     TransportParams->AckDelayExponent = QUIC_TP_ACK_DELAY_EXPONENT_DEFAULT;
@@ -1855,8 +1921,37 @@ QuicCryptoTlsDecodeTransportParameters( // NOLINT(readability-function-size, goo
             QuicTraceLogConnVerbose(
                 DecodeTPReliableReset,
                 Connection,
-                "TP: Decode Reliable Reset");
+                "TP: Reliable Reset");
             break;
+
+        case QUIC_TP_ID_ENABLE_TIMESTAMP: {
+            QUIC_VAR_INT value = 0;
+            if (!TRY_READ_VAR_INT(value)) {
+                QuicTraceEvent(
+                    ConnErrorStatus,
+                    "[conn][%p] ERROR, %u, %s.",
+                    Connection,
+                    Length,
+                    "Invalid length of QUIC_TP_ID_ENABLE_TIMESTAMP");
+                goto Exit;
+            }
+            if (value > 3) {
+                QuicTraceEvent(
+                    ConnError,
+                    "[conn][%p] ERROR, %s.",
+                    Connection,
+                    "Invalid value of QUIC_TP_ID_ENABLE_TIMESTAMP");
+                goto Exit;
+            }
+            QuicTraceLogConnVerbose(
+                DecodeTPMinAckDelay,
+                Connection,
+                "TP: Timestamp (%u)",
+                (uint32_t)value);
+            value <<= QUIC_TP_FLAG_TIMESTAMP_SHIFT; // Convert to QUIC_TP_FLAG_TIMESTAMP_*
+            TransportParams->Flags |= (uint32_t)value;
+            break;
+        }
 
         default:
             if (QuicTpIdIsReserved(Id)) {

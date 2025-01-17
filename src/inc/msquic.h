@@ -23,10 +23,10 @@ Supported Platforms:
 
 #ifdef _WIN32
 #pragma once
-#endif
 
 #pragma warning(disable:4201)  // nonstandard extension used: nameless struct/union
 #pragma warning(disable:4214)  // nonstandard extension used: bit field types other than int
+#endif
 
 #ifdef _KERNEL_MODE
 #include "msquic_winkernel.h"
@@ -69,6 +69,11 @@ typedef _In_range_(0, QUIC_UINT62_MAX) uint64_t QUIC_UINT62;
 // send in a resumption ticket.
 //
 #define QUIC_MAX_RESUMPTION_APP_DATA_LENGTH     1000
+
+//
+// The number of bytes of stateless reset key.
+//
+#define QUIC_STATELESS_RESET_KEY_LENGTH       32
 
 typedef enum QUIC_TLS_PROVIDER {
     QUIC_TLS_PROVIDER_SCHANNEL                  = 0x0000,
@@ -141,6 +146,7 @@ typedef enum QUIC_CREDENTIAL_FLAGS {
     QUIC_CREDENTIAL_FLAG_REVOCATION_CHECK_CACHE_ONLY            = 0x00040000, // Windows only currently
     QUIC_CREDENTIAL_FLAG_INPROC_PEER_CERTIFICATE                = 0x00080000, // Schannel only
     QUIC_CREDENTIAL_FLAG_SET_CA_CERTIFICATE_FILE                = 0x00100000, // OpenSSL only currently
+    QUIC_CREDENTIAL_FLAG_DISABLE_AIA                            = 0x00200000, // Schannel only currently
 } QUIC_CREDENTIAL_FLAGS;
 
 DEFINE_ENUM_FLAG_OPERATORS(QUIC_CREDENTIAL_FLAGS)
@@ -203,6 +209,7 @@ typedef enum QUIC_STREAM_START_FLAGS {
     QUIC_STREAM_START_FLAG_FAIL_BLOCKED         = 0x0002,   // Only opens the stream if flow control allows.
     QUIC_STREAM_START_FLAG_SHUTDOWN_ON_FAIL     = 0x0004,   // Shutdown the stream immediately after start failure.
     QUIC_STREAM_START_FLAG_INDICATE_PEER_ACCEPT = 0x0008,   // Indicate PEER_ACCEPTED event if not accepted at start.
+    QUIC_STREAM_START_FLAG_PRIORITY_WORK        = 0x0010,   // Higher priority than other connection work.
 } QUIC_STREAM_START_FLAGS;
 
 DEFINE_ENUM_FLAG_OPERATORS(QUIC_STREAM_START_FLAGS)
@@ -235,13 +242,16 @@ typedef enum QUIC_SEND_FLAGS {
     QUIC_SEND_FLAG_FIN                      = 0x0004,   // Indicates the request is the one last sent on the stream.
     QUIC_SEND_FLAG_DGRAM_PRIORITY           = 0x0008,   // Indicates the datagram is higher priority than others.
     QUIC_SEND_FLAG_DELAY_SEND               = 0x0010,   // Indicates the send should be delayed because more will be queued soon.
+    QUIC_SEND_FLAG_CANCEL_ON_LOSS           = 0x0020,   // Indicates that a stream is to be cancelled when packet loss is detected.
+    QUIC_SEND_FLAG_PRIORITY_WORK            = 0x0040,   // Higher priority than other connection work.
+    QUIC_SEND_FLAG_CANCEL_ON_BLOCKED        = 0x0080,   // Indicates that a frame should be dropped when it can't be sent immediately.
 } QUIC_SEND_FLAGS;
 
 DEFINE_ENUM_FLAG_OPERATORS(QUIC_SEND_FLAGS)
 
 typedef enum QUIC_DATAGRAM_SEND_STATE {
     QUIC_DATAGRAM_SEND_UNKNOWN,                         // Not yet sent.
-    QUIC_DATAGRAM_SEND_SENT,                            // Sent and awaiting acknowledegment
+    QUIC_DATAGRAM_SEND_SENT,                            // Sent and awaiting acknowledgment
     QUIC_DATAGRAM_SEND_LOST_SUSPECT,                    // Suspected as lost, but still tracked
     QUIC_DATAGRAM_SEND_LOST_DISCARDED,                  // Lost and not longer being tracked
     QUIC_DATAGRAM_SEND_ACKNOWLEDGED,                    // Acknowledged
@@ -261,6 +271,10 @@ typedef enum QUIC_EXECUTION_CONFIG_FLAGS {
 #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
     QUIC_EXECUTION_CONFIG_FLAG_QTIP             = 0x0001,
     QUIC_EXECUTION_CONFIG_FLAG_RIO              = 0x0002,
+    QUIC_EXECUTION_CONFIG_FLAG_XDP              = 0x0004,
+    QUIC_EXECUTION_CONFIG_FLAG_NO_IDEAL_PROC    = 0x0008,
+    QUIC_EXECUTION_CONFIG_FLAG_HIGH_PRIORITY    = 0x0010,
+    QUIC_EXECUTION_CONFIG_FLAG_AFFINITIZE       = 0x0020,
 #endif
 } QUIC_EXECUTION_CONFIG_FLAGS;
 
@@ -544,6 +558,8 @@ typedef struct QUIC_STATISTICS_V2 {
 
     uint32_t SendEcnCongestionCount;        // Number of congestion events caused by ECN.
 
+    uint8_t  HandshakeHopLimitTTL;          // The TTL value in the initial packet of the handshake.
+
     // N.B. New fields must be appended to end
 
 } QUIC_STATISTICS_V2;
@@ -596,6 +612,7 @@ typedef enum QUIC_PERFORMANCE_COUNTERS {
     QUIC_PERF_COUNTER_PATH_FAILURE,         // Total path challenges that fail ever.
     QUIC_PERF_COUNTER_SEND_STATELESS_RESET, // Total stateless reset packets sent ever.
     QUIC_PERF_COUNTER_SEND_STATELESS_RETRY, // Total stateless retry packets sent ever.
+    QUIC_PERF_COUNTER_CONN_LOAD_REJECT,     // Total connections rejected due to worker load.
     QUIC_PERF_COUNTER_MAX,
 } QUIC_PERFORMANCE_COUNTERS;
 
@@ -667,12 +684,18 @@ typedef struct QUIC_SETTINGS {
             uint64_t GreaseQuicBitEnabled                   : 1;
             uint64_t EcnEnabled                             : 1;
             uint64_t HyStartEnabled                         : 1;
+            uint64_t StreamRecvWindowBidiLocalDefault       : 1;
+            uint64_t StreamRecvWindowBidiRemoteDefault      : 1;
+            uint64_t StreamRecvWindowUnidiDefault           : 1;
 #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
             uint64_t EncryptionOffloadAllowed               : 1;
             uint64_t ReliableResetEnabled                   : 1;
-            uint64_t RESERVED                               : 27;
+            uint64_t OneWayDelayEnabled                     : 1;
+            uint64_t NetStatsEventEnabled                   : 1;
+            uint64_t StreamMultiReceiveEnabled              : 1;
+            uint64_t RESERVED                               : 21;
 #else
-            uint64_t RESERVED                               : 29;
+            uint64_t RESERVED                               : 26;
 #endif
         } IsSet;
     };
@@ -718,12 +741,18 @@ typedef struct QUIC_SETTINGS {
 #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
             uint64_t EncryptionOffloadAllowed  : 1;
             uint64_t ReliableResetEnabled      : 1;
-            uint64_t ReservedFlags             : 61;
+            uint64_t OneWayDelayEnabled        : 1;
+            uint64_t NetStatsEventEnabled      : 1;
+            uint64_t StreamMultiReceiveEnabled : 1;
+            uint64_t ReservedFlags             : 58;
 #else
             uint64_t ReservedFlags             : 63;
 #endif
         };
     };
+    uint32_t StreamRecvWindowBidiLocalDefault;
+    uint32_t StreamRecvWindowBidiRemoteDefault;
+    uint32_t StreamRecvWindowUnidiDefault;
 
 } QUIC_SETTINGS;
 
@@ -810,7 +839,9 @@ void
 #define QUIC_PARAM_PREFIX_TLS_SCHANNEL                  0x07000000
 #define QUIC_PARAM_PREFIX_STREAM                        0x08000000
 
-#define QUIC_PARAM_IS_GLOBAL(Param) ((Param & 0x7F000000) == QUIC_PARAM_PREFIX_GLOBAL)
+#define QUIC_PARAM_HIGH_PRIORITY                        0x40000000 // Combine with any param to make it high priority.
+
+#define QUIC_PARAM_IS_GLOBAL(Param) ((Param & 0x3F000000) == QUIC_PARAM_PREFIX_GLOBAL)
 
 //
 // Parameters for Global.
@@ -830,7 +861,7 @@ void
 #define QUIC_PARAM_GLOBAL_EXECUTION_CONFIG              0x01000009  // QUIC_EXECUTION_CONFIG
 #endif
 #define QUIC_PARAM_GLOBAL_TLS_PROVIDER                  0x0100000A  // QUIC_TLS_PROVIDER
-
+#define QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY           0x0100000B  // uint8_t[] - Array size is QUIC_STATELESS_RESET_KEY_LENGTH
 //
 // Parameters for Registration.
 //
@@ -922,6 +953,9 @@ typedef struct QUIC_SCHANNEL_CONTEXT_ATTRIBUTE_EX_W {
 #define QUIC_PARAM_STREAM_IDEAL_SEND_BUFFER_SIZE        0x08000002  // uint64_t - bytes
 #define QUIC_PARAM_STREAM_PRIORITY                      0x08000003  // uint16_t - 0 (low) to 0xFFFF (high) - 0x7FFF (default)
 #define QUIC_PARAM_STREAM_STATISTICS                    0X08000004  // QUIC_STREAM_STATISTICS
+#ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
+#define QUIC_PARAM_STREAM_RELIABLE_OFFSET               0x08000005  // uint64_t
+#endif
 
 typedef
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -1144,6 +1178,8 @@ typedef enum QUIC_CONNECTION_EVENT_TYPE {
     QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED         = 15,   // Only with QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED set
 #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
     QUIC_CONNECTION_EVENT_RELIABLE_RESET_NEGOTIATED         = 16,   // Only indicated if QUIC_SETTINGS.ReliableResetEnabled is TRUE.
+    QUIC_CONNECTION_EVENT_ONE_WAY_DELAY_NEGOTIATED          = 17,   // Only indicated if QUIC_SETTINGS.OneWayDelayEnabled is TRUE.
+    QUIC_CONNECTION_EVENT_NETWORK_STATISTICS                = 18,   // Only indicated if QUIC_SETTINGS.EnableNetStatsEvent is TRUE.
 #endif
 } QUIC_CONNECTION_EVENT_TYPE;
 
@@ -1222,6 +1258,18 @@ typedef struct QUIC_CONNECTION_EVENT {
         struct {
             BOOLEAN IsNegotiated;
         } RELIABLE_RESET_NEGOTIATED;
+        struct {
+            BOOLEAN SendNegotiated;             // TRUE if sending one-way delay timestamps is negotiated.
+            BOOLEAN ReceiveNegotiated;          // TRUE if receiving one-way delay timestamps is negotiated.
+        } ONE_WAY_DELAY_NEGOTIATED;
+        struct {
+           uint32_t BytesInFlight;              // Bytes that were sent on the wire, but not yet acked
+           uint64_t PostedBytes;                // Total bytes queued, but not yet acked. These may contain sent bytes that may have portentially lost too.
+           uint64_t IdealBytes;                 // Ideal number of bytes required to be available to  avoid limiting throughput
+           uint64_t SmoothedRTT;                // Smoothed RTT value
+           uint32_t CongestionWindow;           // Congestion Window
+           uint64_t Bandwidth;                  // Estimated bandwidth
+        } NETWORK_STATISTICS;
 #endif
     };
 } QUIC_CONNECTION_EVENT;
@@ -1364,6 +1412,7 @@ typedef enum QUIC_STREAM_EVENT_TYPE {
     QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE         = 7,
     QUIC_STREAM_EVENT_IDEAL_SEND_BUFFER_SIZE    = 8,
     QUIC_STREAM_EVENT_PEER_ACCEPTED             = 9,
+    QUIC_STREAM_EVENT_CANCEL_ON_LOSS            = 10,
 } QUIC_STREAM_EVENT_TYPE;
 
 typedef struct QUIC_STREAM_EVENT {
@@ -1409,6 +1458,9 @@ typedef struct QUIC_STREAM_EVENT {
         struct {
             uint64_t ByteCount;
         } IDEAL_SEND_BUFFER_SIZE;
+        struct {
+            /* out */ QUIC_UINT62 ErrorCode;
+        } CANCEL_ON_LOSS;
     };
 } QUIC_STREAM_EVENT;
 
@@ -1622,6 +1674,202 @@ QUIC_API
 MsQuicClose(
     _In_ _Pre_defensive_ const void* QuicApi
     );
+
+#endif
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+_Check_return_
+typedef
+QUIC_STATUS
+(QUIC_API *MsQuicOpenVersionFn)(
+    _In_ uint32_t Version,
+    _Out_ _Pre_defensive_ const void** QuicApi
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+typedef
+void
+(QUIC_API *MsQuicCloseFn)(
+    _In_ _Pre_defensive_ const void* QuicApi
+    );
+
+#ifdef _KERNEL_MODE
+
+DECLSPEC_SELECTANY GUID MSQUIC_NPI_ID = {
+    0xC43138E3, 0xCD13, 0x4CB1, { 0x9C, 0xAE, 0xE0, 0x05, 0xC8, 0x55, 0x7A, 0xBA }
+}; // C43138E3-CD13-4CB1-9CAE-E005C8557ABA
+
+DECLSPEC_SELECTANY GUID MSQUIC_MODULE_ID = {
+    0x698F7C72, 0xC2E6, 0x49CD, { 0x8C, 0x39, 0x98, 0x85, 0x1D, 0x50, 0x19, 0x01 }
+}; // 698F7C72-C2E6-49CD-8C39-98851D501901
+
+typedef struct MSQUIC_NMR_DISPATCH {
+    uint16_t  Version;
+    uint16_t  Reserved;
+    MsQuicOpenVersionFn OpenVersion;
+    MsQuicCloseFn Close;
+} MSQUIC_NMR_DISPATCH;
+
+//
+// Stores the internal NMR client state. It's meant to be opaque to the users.
+//
+typedef struct __MSQUIC_NMR_CLIENT {
+    NPI_CLIENT_CHARACTERISTICS NpiClientCharacteristics;
+    LONG BindingCount;
+    HANDLE NmrClientHandle;
+    NPI_MODULEID ModuleId;
+    KEVENT RegistrationCompleteEvent;
+    MSQUIC_NMR_DISPATCH* ProviderDispatch;
+    BOOLEAN Deleting;
+} __MSQUIC_NMR_CLIENT;
+
+#define QUIC_GET_DISPATCH(h) (((__MSQUIC_NMR_CLIENT*)(h))->ProviderDispatch)
+
+static
+NTSTATUS
+__MsQuicClientAttachProvider(
+    _In_ HANDLE NmrBindingHandle,
+    _In_ void *ClientContext,
+    _In_ const NPI_REGISTRATION_INSTANCE *ProviderRegistrationInstance
+    )
+{
+    UNREFERENCED_PARAMETER(ProviderRegistrationInstance);
+
+    NTSTATUS Status;
+    __MSQUIC_NMR_CLIENT* Client = (__MSQUIC_NMR_CLIENT*)ClientContext;
+    void* ProviderContext;
+
+    if (InterlockedIncrement(&Client->BindingCount) == 1) {
+        #pragma warning(suppress:6387) // _Param_(2) could be '0' - by design.
+        Status =
+            NmrClientAttachProvider(
+                NmrBindingHandle,
+                Client,
+                NULL,
+                &ProviderContext,
+                (const void**)&Client->ProviderDispatch);
+        if (NT_SUCCESS(Status)) {
+            KeSetEvent(&Client->RegistrationCompleteEvent, IO_NO_INCREMENT, FALSE);
+        } else {
+            InterlockedDecrement(&Client->BindingCount);
+        }
+    } else {
+        Status = STATUS_NOINTERFACE;
+    }
+
+    return Status;
+}
+
+static
+NTSTATUS
+__MsQuicClientDetachProvider(
+    _In_ void *ClientBindingContext
+    )
+{
+    __MSQUIC_NMR_CLIENT* Client = (__MSQUIC_NMR_CLIENT*)ClientBindingContext;
+    if (InterlockedOr8((char*)&Client->Deleting, 1)) {
+        return STATUS_SUCCESS;
+    } else {
+        return STATUS_PENDING;
+    }
+}
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+__forceinline
+void
+MsQuicNmrClientDeregister(
+    _Inout_ HANDLE* ClientHandle
+    )
+{
+    __MSQUIC_NMR_CLIENT* Client = (__MSQUIC_NMR_CLIENT*)(*ClientHandle);
+
+    if (InterlockedOr8((char*)&Client->Deleting, 1)) {
+        //
+        // We are already in the middle of detaching the client.
+        // Complete it now.
+        //
+        NmrClientDetachProviderComplete(Client->NmrClientHandle);
+    }
+
+    if (Client->NmrClientHandle) {
+        if (NmrDeregisterClient(Client->NmrClientHandle) == STATUS_PENDING) {
+            //
+            // Wait for the deregistration to complete.
+            //
+            NmrWaitForClientDeregisterComplete(Client->NmrClientHandle);
+        }
+        Client->NmrClientHandle = NULL;
+    }
+
+    ExFreePoolWithTag(Client, 'cNQM');
+    *ClientHandle = NULL;
+}
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+__forceinline
+NTSTATUS
+MsQuicNmrClientRegister(
+    _Out_ HANDLE* ClientHandle,
+    _In_ GUID* ClientModuleId,
+    _In_ ULONG TimeoutMs // zero = no wait, non-zero = some wait
+    )
+{
+    NPI_REGISTRATION_INSTANCE *ClientRegistrationInstance;
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    __MSQUIC_NMR_CLIENT* Client =
+        (__MSQUIC_NMR_CLIENT*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*Client), 'cNQM');
+    if (Client == NULL) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Exit;
+    }
+
+    KeInitializeEvent(&Client->RegistrationCompleteEvent, SynchronizationEvent, FALSE);
+
+    Client->ModuleId.Length = sizeof(Client->ModuleId);
+    Client->ModuleId.Type = MIT_GUID;
+    Client->ModuleId.Guid = *ClientModuleId;
+
+    Client->NpiClientCharacteristics.Length = sizeof(Client->NpiClientCharacteristics);
+    Client->NpiClientCharacteristics.ClientAttachProvider = __MsQuicClientAttachProvider;
+    Client->NpiClientCharacteristics.ClientDetachProvider = __MsQuicClientDetachProvider;
+
+    ClientRegistrationInstance = &Client->NpiClientCharacteristics.ClientRegistrationInstance;
+    ClientRegistrationInstance->Size = sizeof(*ClientRegistrationInstance);
+    ClientRegistrationInstance->Version = 0;
+    ClientRegistrationInstance->NpiId = &MSQUIC_NPI_ID;
+    ClientRegistrationInstance->ModuleId = &Client->ModuleId;
+
+    Status =
+        NmrRegisterClient(
+            &Client->NpiClientCharacteristics, Client, &Client->NmrClientHandle);
+    if (!NT_SUCCESS(Status)) {
+        goto Exit;
+    }
+
+    LARGE_INTEGER Timeout;
+    Timeout.QuadPart = UInt32x32To64(TimeoutMs, 10000);
+    Timeout.QuadPart = -Timeout.QuadPart;
+
+    Status =
+        KeWaitForSingleObject(
+            &Client->RegistrationCompleteEvent,
+            Executive, KernelMode, FALSE,
+            &Timeout);
+    if (Status != STATUS_SUCCESS) {
+        Status = STATUS_UNSUCCESSFUL;
+        goto Exit;
+    }
+
+    *ClientHandle = Client;
+
+Exit:
+    if (!NT_SUCCESS(Status) && Client != NULL) {
+        MsQuicNmrClientDeregister((HANDLE*)&Client);
+    }
+
+    return Status;
+}
 
 #endif
 

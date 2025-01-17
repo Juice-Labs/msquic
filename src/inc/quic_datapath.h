@@ -54,7 +54,7 @@ typedef enum CXPLAT_ECN_TYPE {
 } CXPLAT_ECN_TYPE;
 
 //
-// Helper to get the ECN type from the Type of Service field of recieved data.
+// Helper to get the ECN type from the Type of Service field of received data.
 //
 #define CXPLAT_ECN_FROM_TOS(ToS) (CXPLAT_ECN_TYPE)((ToS) & 0x3)
 
@@ -125,16 +125,12 @@ PacketSizeFromUdpPayloadSize(
 // The top level datapath handle type.
 //
 typedef struct CXPLAT_DATAPATH CXPLAT_DATAPATH;
+typedef struct CXPLAT_DATAPATH_RAW CXPLAT_DATAPATH_RAW;
 
 //
 // Represents a UDP or TCP abstraction.
 //
 typedef struct CXPLAT_SOCKET CXPLAT_SOCKET;
-
-//
-// Can be defined to whatever the client needs.
-//
-typedef struct CXPLAT_RECV_PACKET CXPLAT_RECV_PACKET;
 
 //
 // Structure that maintains the 'per send' context.
@@ -177,6 +173,8 @@ typedef struct CXPLAT_ROUTE {
 
     uint8_t LocalLinkLayerAddress[6];
     uint8_t NextHopLinkLayerAddress[6];
+
+    uint16_t DatapathType; // CXPLAT_DATAPATH_TYPE
 
     //
     // QuicCopyRouteInfo copies memory up to this point (not including State).
@@ -225,12 +223,23 @@ typedef struct CXPLAT_RECV_DATA {
     uint8_t TypeOfService;
 
     //
+    // TTL Hoplimit field of the IP header of the received packet on handshake.
+    //
+    uint8_t HopLimitTTL;
+
+    //
     // Flags.
     //
     uint16_t Allocated : 1;          // Used for debugging. Set to FALSE on free.
     uint16_t QueuedOnConnection : 1; // Used for debugging.
-    uint16_t Reserved : 6;
-    uint16_t ReservedEx : 8;
+    uint16_t DatapathType : 2;       // CXPLAT_DATAPATH_TYPE
+    uint16_t Reserved : 4;           // PACKET_TYPE (at least 3 bits)
+    uint16_t ReservedEx : 8;         // Header length
+
+    //
+    // Variable length data (of size `ClientRecvContextLength` passed into
+    // CxPlatDataPathInitialize) directly follows.
+    //
 
 } CXPLAT_RECV_DATA;
 
@@ -277,28 +286,15 @@ typedef struct CXPLAT_QEO_CONNECTION {
 } CXPLAT_QEO_CONNECTION;
 
 //
-// Gets the corresponding receive data from its context pointer.
-//
-CXPLAT_RECV_DATA*
-CxPlatDataPathRecvPacketToRecvData(
-    _In_ const CXPLAT_RECV_PACKET* const RecvPacket
-    );
-
-//
-// Gets the corresponding client context from its receive data pointer.
-//
-CXPLAT_RECV_PACKET*
-CxPlatDataPathRecvDataToRecvPacket(
-    _In_ const CXPLAT_RECV_DATA* const RecvData
-    );
-
-//
 // Function pointer type for datapath TCP accept callbacks.
+// Any QUIC_FAILED status will reject the connection.
+// Do not call CxPlatSocketDelete from this callback, it will
+// crash.
 //
 typedef
 _IRQL_requires_max_(DISPATCH_LEVEL)
 _Function_class_(CXPLAT_DATAPATH_ACCEPT_CALLBACK)
-void
+QUIC_STATUS
 (CXPLAT_DATAPATH_ACCEPT_CALLBACK)(
     _In_ CXPLAT_SOCKET* ListenerSocket,
     _In_ void* ListenerContext,
@@ -416,6 +412,7 @@ CxPlatDataPathInitialize(
     _In_ uint32_t ClientRecvContextLength,
     _In_opt_ const CXPLAT_UDP_DATAPATH_CALLBACKS* UdpCallbacks,
     _In_opt_ const CXPLAT_TCP_DATAPATH_CALLBACKS* TcpCallbacks,
+    _In_ CXPLAT_WORKER_POOL* WorkerPool,
     _In_opt_ QUIC_EXECUTION_CONFIG* Config,
     _Out_ CXPLAT_DATAPATH** NewDatapath
     );
@@ -446,6 +443,7 @@ CxPlatDataPathUpdateConfig(
 #define CXPLAT_DATAPATH_FEATURE_PORT_RESERVATIONS     0x0010
 #define CXPLAT_DATAPATH_FEATURE_TCP                   0x0020
 #define CXPLAT_DATAPATH_FEATURE_RAW                   0x0040
+#define CXPLAT_DATAPATH_FEATURE_TTL                   0x0080
 
 //
 // Queries the currently supported features of the datapath.
@@ -462,7 +460,8 @@ CxPlatDataPathGetSupportedFeatures(
 _IRQL_requires_max_(DISPATCH_LEVEL)
 BOOLEAN
 CxPlatDataPathIsPaddingPreferred(
-    _In_ CXPLAT_DATAPATH* Datapath
+    _In_ CXPLAT_DATAPATH* Datapath,
+    _In_ CXPLAT_SEND_DATA* SendData
     );
 
 //
@@ -595,7 +594,7 @@ CxPlatSocketCreateTcpListener(
     );
 
 //
-// Deletes a socket. This function blocks on all outstandind upcalls and on
+// Deletes a socket. This function blocks on all outstanding upcalls and on
 // return guarantees no further callbacks will occur. DO NOT call this function
 // on an upcall!
 //
@@ -645,6 +644,15 @@ void
 CxPlatSocketGetRemoteAddress(
     _In_ CXPLAT_SOCKET* Socket,
     _Out_ QUIC_ADDR* Address
+    );
+
+//
+// Queries a raw socket availability.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN
+CxPlatSocketRawSocketAvailable(
+    _In_ CXPLAT_SOCKET* Socket
     );
 
 //
@@ -724,11 +732,51 @@ CxPlatSendDataIsFull(
 // Sends the data over the socket.
 //
 _IRQL_requires_max_(DISPATCH_LEVEL)
-QUIC_STATUS
+void
 CxPlatSocketSend(
     _In_ CXPLAT_SOCKET* Socket,
     _In_ const CXPLAT_ROUTE* Route,
     _In_ CXPLAT_SEND_DATA* SendData
+    );
+
+typedef struct CXPLAT_TCP_STATISTICS { // Mostly copied from TCP_INFO_v1 for now
+    uint32_t Mss;
+    uint64_t ConnectionTimeMs;
+    BOOLEAN TimestampsEnabled;
+    uint32_t RttUs;
+    uint32_t MinRttUs;
+    uint32_t BytesInFlight;
+    uint32_t Cwnd;
+    uint32_t SndWnd;
+    uint32_t RcvWnd;
+    uint32_t RcvBuf;
+    uint64_t BytesOut;
+    uint64_t BytesIn;
+    uint32_t BytesReordered;
+    uint32_t BytesRetrans;
+    uint32_t FastRetrans;
+    uint32_t DupAcksIn;
+    uint32_t TimeoutEpisodes;
+    uint8_t SynRetrans;
+    uint32_t SndLimTransRwin;
+    uint32_t SndLimTimeRwin;
+    uint64_t SndLimBytesRwin;
+    uint32_t SndLimTransCwnd;
+    uint32_t SndLimTimeCwnd;
+    uint64_t SndLimBytesCwnd;
+    uint32_t SndLimTransSnd;
+    uint32_t SndLimTimeSnd;
+    uint64_t SndLimBytesSnd;
+} CXPLAT_TCP_STATISTICS;
+
+//
+// Queries socket statistics.
+//
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
+CxPlatSocketGetTcpStatistics(
+    _In_ CXPLAT_SOCKET* Socket,
+    _Out_ CXPLAT_TCP_STATISTICS* Statistics
     );
 
 //
@@ -759,13 +807,6 @@ CxPlatResolveRouteComplete(
     _Inout_ CXPLAT_ROUTE* Route,
     _In_reads_bytes_(6) const uint8_t* PhysicalAddress,
     _In_ uint8_t PathId
-    );
-
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-QuicCopyRouteInfo(
-    _Inout_ CXPLAT_ROUTE* DstRoute,
-    _In_ CXPLAT_ROUTE* SrcRoute
     );
 
 //

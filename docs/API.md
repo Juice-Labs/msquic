@@ -67,13 +67,7 @@ The **PATCH** version **only changes** when a servicing fix is made to an existi
 
 ## Execution Mode
 
-In general, MsQuic uses a callback model for all asynchronous events up to the app. This includes things like connection state changes, new streams being created, stream data being received, and stream sends completing. All these events are indicated to the app via the callback handler, on a thread owned by MsQuic.
-
-Apps are expected to keep any execution time in the callback **to a minimum**. MsQuic does not use separate threads for the protocol execution and upcalls to the app. Therefore, any significant delays on the callback **will delay the protocol**. Any significant time or work needed to be completed by the app must happen on its own thread.
-
-This doesn't mean the app isn't allowed to do any work in the callback. In fact, many things are expressly designed to be most efficient when the app does them on the callback. For instance, closing a handle to a connection or stream is ideally implemented in the "shutdown complete" indications.
-
-One important aspect of this design is that all blocking calls invoked on a callback always happen inline (to prevent deadlocks), and will supercede any calls in progress or queued from a separate thread.
+MsQuic has a very different execution model than classic BSD-style sockets. Please see [Execution](./Execution.md) for more details on how threads and upcalls are handled inside of MsQuic.
 
 ## Settings and Configuration
 

@@ -115,16 +115,18 @@ tracepoint(CLOG_TCP_CPP, PerfTcpReceiveCallback , arg2);\
 
 /*----------------------------------------------------------
 // Decoder Ring for PerfTcpSendCompleteCallback
-// [perf][tcp][%p] SendComplete callback
+// [perf][tcp][%p] SendComplete callback, %u
 // QuicTraceLogVerbose(
         PerfTcpSendCompleteCallback,
-        "[perf][tcp][%p] SendComplete callback",
-        This);
+        "[perf][tcp][%p] SendComplete callback, %u",
+        This,
+        (uint32_t)Status);
 // arg2 = arg2 = This = arg2
+// arg3 = arg3 = (uint32_t)Status = arg3
 ----------------------------------------------------------*/
-#ifndef _clog_3_ARGS_TRACE_PerfTcpSendCompleteCallback
-#define _clog_3_ARGS_TRACE_PerfTcpSendCompleteCallback(uniqueId, encoded_arg_string, arg2)\
-tracepoint(CLOG_TCP_CPP, PerfTcpSendCompleteCallback , arg2);\
+#ifndef _clog_4_ARGS_TRACE_PerfTcpSendCompleteCallback
+#define _clog_4_ARGS_TRACE_PerfTcpSendCompleteCallback(uniqueId, encoded_arg_string, arg2, arg3)\
+tracepoint(CLOG_TCP_CPP, PerfTcpSendCompleteCallback , arg2, arg3);\
 
 #endif
 
@@ -150,24 +152,6 @@ tracepoint(CLOG_TCP_CPP, PerfTcpAppAccept , arg2);\
 
 
 /*----------------------------------------------------------
-// Decoder Ring for PerfTcpAppConnect
-// [perf][tcp][%p] App Connect
-// QuicTraceLogVerbose(
-            PerfTcpAppConnect,
-            "[perf][tcp][%p] App Connect",
-            this);
-// arg2 = arg2 = this = arg2
-----------------------------------------------------------*/
-#ifndef _clog_3_ARGS_TRACE_PerfTcpAppConnect
-#define _clog_3_ARGS_TRACE_PerfTcpAppConnect(uniqueId, encoded_arg_string, arg2)\
-tracepoint(CLOG_TCP_CPP, PerfTcpAppConnect , arg2);\
-
-#endif
-
-
-
-
-/*----------------------------------------------------------
 // Decoder Ring for PerfTcpStartTls
 // [perf][tcp][%p] Start TLS
 // QuicTraceLogVerbose(
@@ -186,12 +170,30 @@ tracepoint(CLOG_TCP_CPP, PerfTcpStartTls , arg2);\
 
 
 /*----------------------------------------------------------
+// Decoder Ring for PerfTcpAppConnect
+// [perf][tcp][%p] App Connect
+// QuicTraceLogVerbose(
+            PerfTcpAppConnect,
+            "[perf][tcp][%p] App Connect",
+            this);
+// arg2 = arg2 = this = arg2
+----------------------------------------------------------*/
+#ifndef _clog_3_ARGS_TRACE_PerfTcpAppConnect
+#define _clog_3_ARGS_TRACE_PerfTcpAppConnect(uniqueId, encoded_arg_string, arg2)\
+tracepoint(CLOG_TCP_CPP, PerfTcpAppConnect , arg2);\
+
+#endif
+
+
+
+
+/*----------------------------------------------------------
 // Decoder Ring for PerfTcpAppDisconnect
 // [perf][tcp][%p] App Disconnect
 // QuicTraceLogVerbose(
-            PerfTcpAppDisconnect,
-            "[perf][tcp][%p] App Disconnect",
-            this);
+                PerfTcpAppDisconnect,
+                "[perf][tcp][%p] App Disconnect",
+                this);
 // arg2 = arg2 = this = arg2
 ----------------------------------------------------------*/
 #ifndef _clog_3_ARGS_TRACE_PerfTcpAppDisconnect

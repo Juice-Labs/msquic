@@ -1162,8 +1162,8 @@ DummyStreamCallback(
 }
 
 struct CloseFromCallbackContext {
-    uint16_t CloseCount;
-    volatile uint16_t CurrentCount;
+    short CloseCount;
+    volatile short CurrentCount;
     uint8_t RawBuffer[100];
     QUIC_BUFFER BufferToSend { sizeof(RawBuffer), RawBuffer };
 
@@ -1192,12 +1192,7 @@ struct CloseFromCallbackContext {
             }
         }
 
-#ifdef _WIN32
-        auto count = (uint16_t)InterlockedIncrement16((volatile short*)&Ctx->CurrentCount);
-#else
-        auto count = (uint16_t)__sync_add_and_fetch((volatile short*)&Ctx->CurrentCount, 1);
-#endif
-        if (Ctx->CloseCount == count-1) {
+        if (Ctx->CloseCount == InterlockedIncrement16(&Ctx->CurrentCount) - 1) {
             Conn->Close();
         }
 
@@ -1218,7 +1213,7 @@ QuicTestConnectionCloseFromCallback() {
     for (uint16_t i = 0; i < 20; i++) {
         CxPlatWatchdog Watchdog(2000);
 
-        CloseFromCallbackContext Context {i, 0};
+        CloseFromCallbackContext Context {(short)i, 0};
 
         MsQuicRegistration Registration(true);
         TEST_QUIC_SUCCEEDED(Registration.GetInitStatus());
@@ -2095,6 +2090,32 @@ void SettingApplyTests(HQUIC Handle, uint32_t Param, bool AllowMtuEcnChanges = t
                 sizeof(QUIC_SETTINGS),
                 &Settings));
     }
+
+    //
+    // MaxOperationsPerDrain
+    //
+    {
+        QUIC_SETTINGS Settings{0};
+        Settings.IsSet.MaxOperationsPerDrain = TRUE;
+
+        Settings.MaxOperationsPerDrain = 0; // Not allowed
+        TEST_QUIC_STATUS(
+            QUIC_STATUS_INVALID_PARAMETER,
+            MsQuic->SetParam(
+                Handle,
+                Param,
+                sizeof(QUIC_SETTINGS),
+                &Settings));
+
+        Settings.MaxOperationsPerDrain = 255; // Max allowed
+        TEST_QUIC_STATUS(
+            QUIC_STATUS_SUCCESS,
+            MsQuic->SetParam(
+                Handle,
+                Param,
+                sizeof(QUIC_SETTINGS),
+                &Settings));
+    }
 }
 
 void QuicTestStatefulGlobalSetParam()
@@ -2488,6 +2509,7 @@ void QuicTestGlobalParam()
         }
     }
 
+#ifndef _KERNEL_MODE
     //
     // QUIC_PARAM_GLOBAL_DATAPATH_FEATURES
     //
@@ -2530,10 +2552,8 @@ void QuicTestGlobalParam()
                     &Length,
                     &ActualFeatures));
         }
-
     }
 
-#ifndef _KERNEL_MODE
 #ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
     //
     // QUIC_PARAM_GLOBAL_EXECUTION_CONFIG
@@ -2560,8 +2580,8 @@ void QuicTestGlobalParam()
             uint32_t DataLength = sizeof(Data);
             QUIC_EXECUTION_CONFIG* Config = (QUIC_EXECUTION_CONFIG*)Data;
             Config->ProcessorCount = 4;
-            if (CxPlatProcMaxCount() < Config->ProcessorCount) {
-                Config->ProcessorCount = CxPlatProcMaxCount();
+            if (CxPlatProcCount() < Config->ProcessorCount) {
+                Config->ProcessorCount = CxPlatProcCount();
                 DataLength = QUIC_EXECUTION_CONFIG_MIN_SIZE + sizeof(uint16_t) * Config->ProcessorCount;
             }
             for (uint16_t i = 0; i < (uint16_t)Config->ProcessorCount; ++i) {
@@ -2588,7 +2608,7 @@ void QuicTestGlobalParam()
         }
 
 #if defined(QUIC_API_ENABLE_PREVIEW_FEATURES)
-        if (!UseQTIP)
+        if (!UseQTIP && !UseDuoNic)
 #endif
         {
             //
@@ -2650,6 +2670,85 @@ void QuicTestGlobalParam()
         {
             TestScopeLogger LogScope1("GetParam");
             SimpleGetParamTest(nullptr, QUIC_PARAM_GLOBAL_VERSION_NEGOTIATION_ENABLED, sizeof(Flag), &Flag);
+        }
+    }
+#endif
+
+    //
+    // QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY
+    //
+    {
+        TestScopeLogger LogScope0("QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY");
+        {
+            TestScopeLogger LogScope1("SetParam");
+            uint8_t StatelessResetkey[QUIC_STATELESS_RESET_KEY_LENGTH - 1];
+            CxPlatRandom(sizeof(StatelessResetkey), StatelessResetkey);
+            {
+                TestScopeLogger LogScope2("StatelessResetkey fail with invalid state");
+                TEST_QUIC_STATUS(
+                    QUIC_STATUS_INVALID_STATE,
+                    MsQuic->SetParam(
+                        nullptr,
+                        QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY,
+                        sizeof(StatelessResetkey),
+                        StatelessResetkey));
+            }
+            {
+                TestScopeLogger LogScope2("StatelessResetkey fail with invalid parameter");
+                MsQuicRegistration Registration;
+                TEST_QUIC_STATUS(
+                    QUIC_STATUS_INVALID_PARAMETER,
+                    MsQuic->SetParam(
+                        nullptr,
+                        QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY,
+                        sizeof(StatelessResetkey),
+                        StatelessResetkey));
+            }
+        }
+    }
+
+#if DEBUG
+    //
+    // QUIC_PARAM_GLOBAL_PLATFORM_WORKER_POOL
+    //
+    {
+        TestScopeLogger LogScope0("QUIC_PARAM_GLOBAL_PLATFORM_WORKER_POOL");
+        {
+            TestScopeLogger LogScope1("SetParam");
+            //
+            // Invalid features
+            //
+            {
+                TestScopeLogger LogScope2("SetParam is not allowed");
+                TEST_QUIC_STATUS(
+                    QUIC_STATUS_INVALID_PARAMETER,
+                    MsQuic->SetParam(
+                        nullptr,
+                        QUIC_PARAM_GLOBAL_PLATFORM_WORKER_POOL,
+                        0,
+                        nullptr));
+            }
+        }
+
+        {
+            TestScopeLogger LogScope2("GetParam. Failed by missing MsQuicLib.WorkerPool");
+            uint32_t Length = 0;
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_BUFFER_TOO_SMALL,
+                MsQuic->GetParam(
+                    nullptr,
+                    QUIC_PARAM_GLOBAL_PLATFORM_WORKER_POOL,
+                    &Length,
+                    nullptr));
+            TEST_EQUAL(Length, sizeof(CXPLAT_WORKER_POOL*));
+
+            CXPLAT_WORKER_POOL* WorkerPool = 0;
+            TEST_QUIC_SUCCEEDED(
+                MsQuic->GetParam(
+                    nullptr,
+                    QUIC_PARAM_GLOBAL_PLATFORM_WORKER_POOL,
+                    &Length,
+                    &WorkerPool));
         }
     }
 #endif
@@ -4311,13 +4410,13 @@ void QuicTest_QUIC_PARAM_CONN_ORIG_DEST_CID(MsQuicRegistration& Registration, Ms
         //
         uint32_t SizeOfBuffer = 8;
         uint8_t Buffer[8] = {0};
-        uint8_t ZeroBuffer[8] = {0}; 
+        uint8_t ZeroBuffer[8] = {0};
         TestScopeLogger LogScope1("GetParam test success case");
         TEST_QUIC_STATUS(
-            QUIC_STATUS_SUCCESS, 
+            QUIC_STATUS_SUCCESS,
             Connection.GetParam(
                 QUIC_PARAM_CONN_ORIG_DEST_CID,
-                &SizeOfBuffer, 
+                &SizeOfBuffer,
                 Buffer
             )
         )
@@ -4335,10 +4434,10 @@ void QuicTest_QUIC_PARAM_CONN_ORIG_DEST_CID(MsQuicRegistration& Registration, Ms
         uint32_t SizeOfBuffer = 8;
         TestScopeLogger LogScope1("GetParam null buffer check");
         TEST_QUIC_STATUS(
-            QUIC_STATUS_INVALID_PARAMETER, 
+            QUIC_STATUS_INVALID_PARAMETER,
             Connection.GetParam(
                 QUIC_PARAM_CONN_ORIG_DEST_CID,
-                &SizeOfBuffer, 
+                &SizeOfBuffer,
                 nullptr
             )
         )
@@ -4356,10 +4455,10 @@ void QuicTest_QUIC_PARAM_CONN_ORIG_DEST_CID(MsQuicRegistration& Registration, Ms
         TestScopeLogger LogScope1("GetParam buffer too small check");
         uint8_t Buffer[1];
         TEST_QUIC_STATUS(
-            QUIC_STATUS_BUFFER_TOO_SMALL, 
+            QUIC_STATUS_BUFFER_TOO_SMALL,
             Connection.GetParam(
                 QUIC_PARAM_CONN_ORIG_DEST_CID,
-                &SizeOfBuffer, 
+                &SizeOfBuffer,
                 Buffer
             )
         )
@@ -4375,18 +4474,18 @@ void QuicTest_QUIC_PARAM_CONN_ORIG_DEST_CID(MsQuicRegistration& Registration, Ms
               4433));
         uint32_t SizeOfBuffer = 100;
         uint8_t Buffer[100] = {0};
-        uint8_t ZeroBuffer[100] = {0}; 
+        uint8_t ZeroBuffer[100] = {0};
         TestScopeLogger LogScope1("GetParam size of buffer bigger than needed");
         TEST_QUIC_STATUS(
-            QUIC_STATUS_SUCCESS, 
+            QUIC_STATUS_SUCCESS,
             Connection.GetParam(
                 QUIC_PARAM_CONN_ORIG_DEST_CID,
-                &SizeOfBuffer, 
+                &SizeOfBuffer,
                 Buffer
             )
         )
         TEST_NOT_EQUAL(memcmp(Buffer, ZeroBuffer, sizeof(Buffer)), 0);
-        // 
+        //
         // There is no way the CID written should be 100 bytes according to the RFC.
         //
         TEST_TRUE(SizeOfBuffer < 100);
@@ -4403,19 +4502,19 @@ void QuicTest_QUIC_PARAM_CONN_ORIG_DEST_CID(MsQuicRegistration& Registration, Ms
         uint32_t SizeOfBuffer = 0;
         TestScopeLogger LogScope1("GetParam check OrigDestCID size with nullptr");
         TEST_QUIC_STATUS(
-            QUIC_STATUS_BUFFER_TOO_SMALL, 
+            QUIC_STATUS_BUFFER_TOO_SMALL,
             Connection.GetParam(
                 QUIC_PARAM_CONN_ORIG_DEST_CID,
-                &SizeOfBuffer, 
+                &SizeOfBuffer,
                 nullptr
             )
         )
         TEST_TRUE(SizeOfBuffer >= 8);
         TEST_QUIC_STATUS(
-            QUIC_STATUS_INVALID_PARAMETER, 
+            QUIC_STATUS_INVALID_PARAMETER,
             Connection.GetParam(
                 QUIC_PARAM_CONN_ORIG_DEST_CID,
-                &SizeOfBuffer, 
+                &SizeOfBuffer,
                 nullptr
             )
         )
@@ -4506,6 +4605,13 @@ void QuicTestTlsParam()
         //
         {
             TestScopeLogger LogScope1("GetParam");
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_INVALID_PARAMETER,
+                Connection.GetParam(
+                    QUIC_PARAM_TLS_HANDSHAKE_INFO,
+                    nullptr,
+                    nullptr));
+
             uint32_t Length = 0;
             TEST_QUIC_STATUS(
                 QUIC_STATUS_BUFFER_TOO_SMALL,
@@ -4688,6 +4794,141 @@ void QuicTestTlsParam()
         }
     }
 #endif
+}
+
+struct TestTlsHandshakeInfoServerContext {
+    MsQuicConnection** Server;
+    MsQuicConfiguration* ServerConfiguration;
+    QUIC_STATUS GetParamStatus;
+};
+
+QUIC_STATUS
+TestTlsHandshakeInfoListenerCallback(
+    _In_ MsQuicListener* /*Listener*/,
+    _In_opt_ void* ListenerContext,
+    _Inout_ QUIC_LISTENER_EVENT* Event)
+{
+    TestTlsHandshakeInfoServerContext* Context = (TestTlsHandshakeInfoServerContext*)ListenerContext;
+    if (Event->Type == QUIC_LISTENER_EVENT_NEW_CONNECTION) {
+        *Context->Server = new(std::nothrow) MsQuicConnection(
+            Event->NEW_CONNECTION.Connection,
+            CleanUpManual,
+            [](MsQuicConnection* Connection, void* Context, QUIC_CONNECTION_EVENT* Event) {
+                if (Event->Type == QUIC_CONNECTION_EVENT_CONNECTED) {
+                    QUIC_HANDSHAKE_INFO Info = {};
+                    uint32_t Length = sizeof(Info);
+                    ((TestTlsHandshakeInfoServerContext*)Context)->GetParamStatus =
+                        MsQuic->GetParam(
+                            *Connection,
+                            QUIC_PARAM_TLS_HANDSHAKE_INFO,
+                            &Length,
+                            &Info);
+                }
+                return QUIC_STATUS_SUCCESS;
+            },
+            Context);
+        (*Context->Server)->SetConfiguration(*Context->ServerConfiguration);
+    }
+    return QUIC_STATUS_SUCCESS;
+}
+
+void
+QuicTestTlsHandshakeInfo(
+    _In_ bool EnableResumption
+    )
+{
+    MsQuicRegistration Registration;
+    TEST_TRUE(Registration.IsValid());
+
+    MsQuicAlpn Alpn("MsQuicTest");
+
+    MsQuicCredentialConfig ClientCredConfig;
+    MsQuicConfiguration ClientConfiguration(Registration, Alpn, ClientCertCredConfig);
+    TEST_TRUE(ClientConfiguration.IsValid());
+
+    MsQuicSettings Settings;
+    if (EnableResumption) {
+        Settings.SetServerResumptionLevel(QUIC_SERVER_RESUME_ONLY);
+    }
+
+    MsQuicConfiguration ServerConfiguration(Registration, Alpn, Settings, ServerSelfSignedCredConfig);
+    TEST_TRUE(ServerConfiguration.IsValid());
+
+    TestTlsHandshakeInfoServerContext ServerContext = { nullptr, &ServerConfiguration, QUIC_STATUS_SUCCESS };
+
+    MsQuicListener Listener(
+        Registration,
+        CleanUpManual,
+        TestTlsHandshakeInfoListenerCallback,
+        &ServerContext);
+    TEST_QUIC_SUCCEEDED(Listener.GetInitStatus());
+
+    UniquePtr<MsQuicConnection> Server;
+    ServerContext.Server = (MsQuicConnection**)&Server;
+    Listener.Context = &ServerContext;
+
+    QuicAddr ServerLocalAddr(QUIC_ADDRESS_FAMILY_INET);
+    TEST_QUIC_SUCCEEDED(Listener.Start(Alpn, ServerLocalAddr));
+    TEST_QUIC_SUCCEEDED(Listener.GetLocalAddr(ServerLocalAddr));
+
+    MsQuicConnection Client(Registration);
+    TEST_QUIC_SUCCEEDED(Client.GetInitStatus());
+
+    if (UseDuoNic) {
+        QuicAddr RemoteAddr{QuicAddrGetFamily(ServerLocalAddr), ServerLocalAddr.GetPort()};
+        QuicAddrSetToDuoNic(&RemoteAddr.SockAddr);
+        TEST_QUIC_SUCCEEDED(Client.SetRemoteAddr(RemoteAddr));
+    }
+
+    TEST_QUIC_SUCCEEDED(
+        Client.Start(
+            ClientConfiguration,
+            QUIC_ADDRESS_FAMILY_INET,
+            QUIC_LOCALHOST_FOR_AF(QUIC_ADDRESS_FAMILY_INET),
+            ServerLocalAddr.GetPort()));
+
+    Client.HandshakeCompleteEvent.WaitForever();
+    TEST_TRUE(Client.HandshakeComplete);
+    TEST_TRUE(Server);
+    Server->HandshakeCompleteEvent.WaitForever();
+    TEST_TRUE(Server->HandshakeComplete);
+
+    //
+    // Validate the GetParam succeeded in the CONNECTED callback.
+    //
+    TEST_QUIC_SUCCEEDED(ServerContext.GetParamStatus);
+
+    QUIC_HANDSHAKE_INFO Info = {};
+    uint32_t Length = sizeof(Info);
+    TEST_QUIC_SUCCEEDED(
+        Client.GetParam(
+            QUIC_PARAM_TLS_HANDSHAKE_INFO,
+            &Length,
+            &Info
+    ));
+
+    if (EnableResumption) {
+        //
+        // The server should NOT have freed the TLS state, so this
+        // should succeed.
+        //
+        TEST_QUIC_SUCCEEDED(
+            Server->GetParam(
+                QUIC_PARAM_TLS_HANDSHAKE_INFO,
+                &Length,
+                &Info));
+    } else {
+        //
+        // The server should have freed the TLS state by now, so this
+        // should fail.
+        //
+        TEST_EQUAL(
+            Server->GetParam(
+                QUIC_PARAM_TLS_HANDSHAKE_INFO,
+                &Length,
+                &Info),
+            QUIC_STATUS_INVALID_STATE);
+    }
 }
 
 void QuicTestStreamParam()
@@ -4971,6 +5212,77 @@ void QuicTestStreamParam()
             TEST_EQUAL(Length, sizeof(QUIC_STREAM_STATISTICS));
         }
     }
+
+#ifdef QUIC_PARAM_STREAM_RELIABLE_OFFSET
+    //
+    // QUIC_PARAM_STREAM_RELIABLE_OFFSET
+    // QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV
+    //
+    {
+        TestScopeLogger LogScope0("QUIC_PARAM_STREAM_RELIABLE_OFFSET");
+        MsQuicStream Stream(Connection, QUIC_STREAM_OPEN_FLAG_NONE);
+        uint32_t BufferSize = 1;
+
+        //
+        // GetParam Test Invalid States.
+        //
+        {
+            TestScopeLogger LogScope1("GetParam for invalid states");
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_BUFFER_TOO_SMALL,
+                MsQuic->GetParam(
+                    Stream.Handle,
+                    QUIC_PARAM_STREAM_RELIABLE_OFFSET,
+                    &BufferSize,
+                    NULL));
+            BufferSize = 1;
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_BUFFER_TOO_SMALL,
+                MsQuic->GetParam(
+                    Stream.Handle,
+                    QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV,
+                    &BufferSize,
+                    NULL));
+
+            BufferSize = 64;
+
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_INVALID_PARAMETER,
+                MsQuic->GetParam(
+                    Stream.Handle,
+                    QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV,
+                    &BufferSize,
+                    NULL));
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_INVALID_PARAMETER,
+                MsQuic->GetParam(
+                    Stream.Handle,
+                    QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV,
+                    &BufferSize,
+                    NULL));
+
+            //
+            // Should return invalid state since we haven't set it yet.
+            //
+            uint64_t Buffer = 10000;
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_INVALID_STATE,
+                MsQuic->GetParam(
+                    Stream.Handle,
+                    QUIC_PARAM_STREAM_RELIABLE_OFFSET,
+                    &BufferSize,
+                    &Buffer));
+            Buffer = 10000;
+            TEST_QUIC_STATUS(
+                QUIC_STATUS_INVALID_STATE,
+                MsQuic->GetParam(
+                    Stream.Handle,
+                    QUIC_PARAM_STREAM_RELIABLE_OFFSET_RECV,
+                    &BufferSize,
+                    &Buffer));
+        }
+    }
+#endif // QUIC_PARAM_STREAM_RELIABLE_OFFSET
 }
 
 void
@@ -4988,12 +5300,16 @@ QuicTestGetPerfCounters()
             nullptr),
         QUIC_STATUS_BUFFER_TOO_SMALL);
 
-    TEST_EQUAL(BufferLength, sizeof(uint64_t) * QUIC_PERF_COUNTER_MAX);
+    if (BufferLength < sizeof(uint64_t) * QUIC_PERF_COUNTER_MAX) {
+        TEST_FAILURE("Perf counters length too small");
+        return;
+    }
 
     //
     // Test getting the full array of counters.
     //
     uint64_t Counters[QUIC_PERF_COUNTER_MAX];
+    BufferLength = sizeof(Counters);
     TEST_QUIC_SUCCEEDED(
         MsQuic->GetParam(
             nullptr,

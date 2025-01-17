@@ -39,9 +39,97 @@
 
 #endif
 
+typedef struct CXPLAT_DATAPATH_COMMON {
+    //
+    // The UDP callback function pointers.
+    //
+    CXPLAT_UDP_DATAPATH_CALLBACKS UdpHandlers;
+
+    //
+    // The TCP callback function pointers.
+    //
+    CXPLAT_TCP_DATAPATH_CALLBACKS TcpHandlers;
+
+    //
+    // The Worker WorkerPool
+    //
+    CXPLAT_WORKER_POOL* WorkerPool;
+
+    //
+    // Set of supported features.
+    //
+    uint32_t Features;
+
+    CXPLAT_DATAPATH_RAW* RawDataPath;
+} CXPLAT_DATAPATH_COMMON;
+
+typedef struct CXPLAT_SOCKET_COMMON {
+    //
+    // The local address and port.
+    //
+    QUIC_ADDR LocalAddress;
+
+    //
+    // The remote address and port.
+    //
+    QUIC_ADDR RemoteAddress;
+
+    //
+    // Parent datapath.
+    //
+    CXPLAT_DATAPATH* Datapath;
+
+    //
+    // The client context for this binding.
+    //
+    void *ClientContext;
+
+    //
+    // The local interface's MTU.
+    //
+    uint16_t Mtu;
+} CXPLAT_SOCKET_COMMON;
+
+typedef struct CXPLAT_SEND_DATA_COMMON {
+    uint16_t DatapathType; // CXPLAT_DATAPATH_TYPE
+
+    //
+    // The type of ECN markings needed for send.
+    //
+    uint8_t ECN; // CXPLAT_ECN_TYPE
+
+    //
+    // The total buffer size for WsaBuffers.
+    //
+    uint32_t TotalSize;
+
+    //
+    // The send segmentation size; zero if segmentation is not performed.
+    //
+    uint16_t SegmentSize;
+} CXPLAT_SEND_DATA_COMMON;
+
+typedef enum CXPLAT_DATAPATH_TYPE {
+    CXPLAT_DATAPATH_TYPE_UNKNOWN = 0,
+    CXPLAT_DATAPATH_TYPE_NORMAL,
+    CXPLAT_DATAPATH_TYPE_RAW, // currently raw == xdp
+} CXPLAT_DATAPATH_TYPE;
+
+typedef enum CXPLAT_SOCKET_TYPE {
+    CXPLAT_SOCKET_UDP             = 0,
+    CXPLAT_SOCKET_TCP_LISTENER    = 1,
+    CXPLAT_SOCKET_TCP             = 2,
+    CXPLAT_SOCKET_TCP_SERVER      = 3
+} CXPLAT_SOCKET_TYPE;
+
+#define DatapathType(SendData) ((CXPLAT_SEND_DATA_COMMON*)(SendData))->DatapathType
+
 #ifdef _KERNEL_MODE
 
 #define CXPLAT_BASE_REG_PATH L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\MsQuic\\Parameters\\"
+
+#define SOCKET PWSK_SOCKET
+#define INVALID_SOCKET NULL
 
 typedef struct CX_PLATFORM {
 
@@ -49,6 +137,11 @@ typedef struct CX_PLATFORM {
     // Random number algorithm loaded for DISPATCH_LEVEL usage.
     //
     BCRYPT_ALG_HANDLE RngAlgorithm;
+
+    //
+    // Current Windows build number
+    //
+    DWORD dwBuildNumber;
 
 #ifdef DEBUG
     //
@@ -64,6 +157,134 @@ typedef struct CX_PLATFORM {
 #endif
 
 } CX_PLATFORM;
+
+typedef struct _WSK_DATAGRAM_SOCKET {
+    const WSK_PROVIDER_DATAGRAM_DISPATCH* Dispatch;
+} WSK_DATAGRAM_SOCKET, * PWSK_DATAGRAM_SOCKET;
+
+//
+// Per-port state.
+//
+typedef struct CXPLAT_SOCKET {
+    CXPLAT_SOCKET_COMMON;
+
+    //
+    // Flag indicates the binding has a default remote destination.
+    //
+    BOOLEAN Connected : 1;
+
+    //
+    // Flag indicates the binding is being used for PCP.
+    //
+    BOOLEAN PcpBinding : 1;
+
+    //
+    // UDP socket used for sending/receiving datagrams.
+    //
+    union {
+        PWSK_SOCKET Socket;
+        PWSK_DATAGRAM_SOCKET DgrmSocket;
+    };
+
+    //
+    // Event used to wait for completion of socket functions.
+    //
+    CXPLAT_EVENT WskCompletionEvent;
+
+    //
+    // IRP used for socket functions.
+    //
+    union {
+        IRP Irp;
+        UCHAR IrpBuffer[sizeof(IRP) + sizeof(IO_STACK_LOCATION)];
+    };
+
+    uint8_t UseTcp : 1; // always false?
+    uint8_t RawSocketAvailable : 1;
+
+    CXPLAT_RUNDOWN_REF Rundown[0]; // Per-proc
+
+} CXPLAT_SOCKET;
+
+//
+// Represents the per-processor state of the datapath context.
+//
+typedef struct CXPLAT_DATAPATH_PROC_CONTEXT {
+
+    //
+    // Pool of send contexts to be shared by all sockets on this core.
+    //
+    CXPLAT_POOL SendDataPool;
+
+    //
+    // Pool of send buffers to be shared by all sockets on this core.
+    //
+    CXPLAT_POOL SendBufferPool;
+
+    //
+    // Pool of large segmented send buffers to be shared by all sockets on this
+    // core.
+    //
+    CXPLAT_POOL LargeSendBufferPool;
+
+    //
+    // Pool of receive datagram contexts and buffers to be shared by all sockets
+    // on this core. Index 0 is regular, Index 1 is URO.
+    //
+    //
+    CXPLAT_POOL RecvDatagramPools[2];
+
+    //
+    // Pool of receive data buffers. Index 0 is 4096, Index 1 is 65536.
+    //
+    CXPLAT_POOL RecvBufferPools[2];
+
+    int64_t OutstandingPendingBytes;
+
+} CXPLAT_DATAPATH_PROC_CONTEXT;
+
+//
+// Structure that maintains all the internal state for the
+// CxPlatDataPath interface.
+//
+typedef struct CXPLAT_DATAPATH {
+    CXPLAT_DATAPATH_COMMON;
+
+    //
+    // The registration with WinSock Kernel.
+    //
+    WSK_REGISTRATION WskRegistration;
+    WSK_PROVIDER_NPI WskProviderNpi;
+    WSK_CLIENT_DATAGRAM_DISPATCH WskDispatch;
+
+    //
+    // The size of the buffer to allocate for client's receive context structure.
+    //
+    uint32_t ClientRecvDataLength;
+
+    //
+    // The size of each receive datagram array element, including client context,
+    // internal context, and padding.
+    //
+    uint32_t DatagramStride;
+
+    //
+    // The number of processors.
+    //
+    uint32_t ProcCount;
+
+    uint8_t UseTcp : 1; // Not supported. always false
+
+    //
+    // Per-processor completion contexts.
+    //
+    CXPLAT_DATAPATH_PROC_CONTEXT ProcContexts[0];
+
+} CXPLAT_DATAPATH;
+
+#ifndef htonl
+#define htonl _byteswap_ulong
+#endif
 
 #elif _WIN32
 
@@ -89,6 +310,11 @@ typedef struct CX_PLATFORM {
     //
     HANDLE Heap;
 
+    //
+    // Current Windows build number
+    //
+    DWORD dwBuildNumber;
+
 #ifdef DEBUG
     //
     // 1/Denominator of allocations to fail.
@@ -103,6 +329,315 @@ typedef struct CX_PLATFORM {
 #endif
 
 } CX_PLATFORM;
+
+//
+// Represents a single IO completion port and thread for processing work that is
+// completed on a single processor.
+//
+typedef struct QUIC_CACHEALIGN CXPLAT_DATAPATH_PROC {
+
+    //
+    // Parent datapath.
+    //
+    CXPLAT_DATAPATH* Datapath;
+
+    //
+    // Event queue used for processing work.
+    //
+    CXPLAT_EVENTQ* EventQ;
+
+    //
+    // Used to synchronize clean up.
+    //
+    CXPLAT_REF_COUNT RefCount;
+
+    //
+    // The index into the execution config processor array.
+    //
+    uint16_t PartitionIndex;
+
+    //
+    // Debug flags
+    //
+    uint8_t Uninitialized : 1;
+
+    //
+    // Pool of send contexts to be shared by all sockets on this core.
+    //
+    CXPLAT_POOL SendDataPool;
+
+    //
+    // Pool of send contexts to be shared by all RIO sockets on this core.
+    //
+    CXPLAT_POOL RioSendDataPool;
+
+    //
+    // Pool of send buffers to be shared by all sockets on this core.
+    //
+    CXPLAT_POOL SendBufferPool;
+
+    //
+    // Pool of large segmented send buffers to be shared by all sockets on this
+    // core.
+    //
+    CXPLAT_POOL LargeSendBufferPool;
+
+    //
+    // Pool of send buffers to be shared by all RIO sockets on this core.
+    //
+    CXPLAT_POOL RioSendBufferPool;
+
+    //
+    // Pool of large segmented send buffers to be shared by all RIO sockets on
+    // this core.
+    //
+    CXPLAT_POOL RioLargeSendBufferPool;
+
+    //
+    // Pool of receive datagram contexts and buffers to be shared by all sockets
+    // on this core.
+    //
+    CXPLAT_POOL_EX RecvDatagramPool;
+
+    //
+    // Pool of RIO receive datagram contexts and buffers to be shared by all
+    // RIO sockets on this core.
+    //
+    CXPLAT_POOL RioRecvPool;
+
+} CXPLAT_DATAPATH_PARTITION;
+
+//
+// Per-processor socket state.
+//
+typedef struct QUIC_CACHEALIGN CXPLAT_SOCKET_PROC {
+    //
+    // Used to synchronize clean up.
+    //
+    CXPLAT_REF_COUNT RefCount;
+
+    //
+    // Submission queue event for IO completion
+    //
+    CXPLAT_SQE IoSqe;
+
+    //
+    // Submission queue event for RIO IO completion
+    //
+    CXPLAT_SQE RioSqe;
+
+    //
+    // The datapath per-processor context.
+    //
+    CXPLAT_DATAPATH_PARTITION* DatapathProc;
+
+    //
+    // Parent CXPLAT_SOCKET.
+    //
+    CXPLAT_SOCKET* Parent;
+
+    //
+    // Socket handle to the networking stack.
+    //
+    SOCKET Socket;
+
+    //
+    // Rundown for synchronizing upcalls to the app and downcalls on the Socket.
+    //
+    CXPLAT_RUNDOWN_REF RundownRef;
+
+    //
+    // Flag indicates the socket started processing IO.
+    //
+    BOOLEAN IoStarted : 1;
+
+    //
+    // Flag indicates a persistent out-of-memory failure for the receive path.
+    //
+    BOOLEAN RecvFailure : 1;
+
+    //
+    // Debug Flags
+    //
+    uint8_t Uninitialized : 1;
+    uint8_t Freed : 1;
+
+    //
+    // The set of parameters/state passed to WsaRecvMsg for the IP stack to
+    // populate to indicate the result of the receive.
+    //
+
+    union {
+    //
+    // Normal TCP/UDP socket data
+    //
+    struct {
+    RIO_CQ RioCq;
+    RIO_RQ RioRq;
+    ULONG RioRecvCount;
+    ULONG RioSendCount;
+    CXPLAT_LIST_ENTRY RioSendOverflow;
+    BOOLEAN RioNotifyArmed;
+    };
+    //
+    // TCP Listener socket data
+    //
+    struct {
+    CXPLAT_SOCKET* AcceptSocket;
+    char AcceptAddrSpace[
+        sizeof(SOCKADDR_INET) + 16 +
+        sizeof(SOCKADDR_INET) + 16
+        ];
+    };
+    };
+} CXPLAT_SOCKET_PROC;
+
+//
+// Main structure for tracking all UDP abstractions.
+//
+typedef struct CXPLAT_DATAPATH {
+    CXPLAT_DATAPATH_COMMON;
+
+    //
+    // Function pointer to AcceptEx.
+    //
+    LPFN_ACCEPTEX AcceptEx;
+
+    //
+    // Function pointer to ConnectEx.
+    //
+    LPFN_CONNECTEX ConnectEx;
+
+    //
+    // Function pointer to WSASendMsg.
+    //
+    LPFN_WSASENDMSG WSASendMsg;
+
+    //
+    // Function pointer to WSARecvMsg.
+    //
+    LPFN_WSARECVMSG WSARecvMsg;
+
+    //
+    // Function pointer table for RIO.
+    //
+    RIO_EXTENSION_FUNCTION_TABLE RioDispatch;
+
+    //
+    // Used to synchronize clean up.
+    //
+    CXPLAT_REF_COUNT RefCount;
+
+    //
+    // The size of each receive datagram array element, including client context,
+    // internal context, and padding.
+    //
+    uint32_t DatagramStride;
+
+    //
+    // The offset of the receive payload buffer from the start of the receive
+    // context.
+    //
+    uint32_t RecvPayloadOffset;
+
+    //
+    // The number of processors.
+    //
+    uint16_t PartitionCount;
+
+    //
+    // Maximum batch sizes supported for send.
+    //
+    uint8_t MaxSendBatchSize;
+
+    //
+    // Uses RIO interface instead of normal asyc IO.
+    //
+    uint8_t UseRio : 1;
+
+    //
+    // Debug flags
+    //
+    uint8_t Uninitialized : 1;
+    uint8_t Freed : 1;
+
+    uint8_t UseTcp : 1;
+
+    //
+    // Per-processor completion contexts.
+    //
+    CXPLAT_DATAPATH_PARTITION Partitions[0];
+
+} CXPLAT_DATAPATH;
+
+//
+// Per-port state. Multiple sockets are created on each port.
+//
+typedef struct CXPLAT_SOCKET {
+    CXPLAT_SOCKET_COMMON;
+
+    //
+    // Synchronization mechanism for cleanup.
+    //
+    CXPLAT_REF_COUNT RefCount;
+
+    //
+    // The size of a receive buffer's payload.
+    //
+    uint32_t RecvBufLen;
+
+    //
+    // Indicates the binding connected to a remote IP address.
+    //
+    BOOLEAN Connected : 1;
+
+    //
+    // Socket type.
+    //
+    uint8_t Type : 2; // CXPLAT_SOCKET_TYPE
+
+    //
+    // Flag indicates the socket has more than one socket, affinitized to all
+    // the processors.
+    //
+    uint16_t NumPerProcessorSockets : 1;
+
+    //
+    // Flag indicates the socket has a default remote destination.
+    //
+    uint8_t HasFixedRemoteAddress : 1;
+
+    //
+    // Flag indicates the socket indicated a disconnect event.
+    //
+    uint8_t DisconnectIndicated : 1;
+
+    //
+    // Flag indicates the binding is being used for PCP.
+    //
+    uint8_t PcpBinding : 1;
+
+    //
+    // Flag indicates the socket is using RIO instead of traditional Winsock.
+    //
+    uint8_t UseRio : 1;
+
+    //
+    // Debug flags.
+    //
+    uint8_t Uninitialized : 1;
+    uint8_t Freed : 1;
+
+    uint8_t UseTcp : 1;                  // Quic over TCP
+
+    uint8_t RawSocketAvailable : 1;
+
+    //
+    // Per-processor socket contexts.
+    //
+    CXPLAT_SOCKET_PROC PerProcSockets[0];
+
+} CXPLAT_SOCKET;
 
 #elif defined(CX_PLATFORM_LINUX) || defined(CX_PLATFORM_DARWIN)
 
@@ -124,6 +659,11 @@ typedef struct CX_PLATFORM {
 #endif
 
 } CX_PLATFORM;
+
+#define IS_LOOPBACK(Address) ((Address.Ip.sa_family == QUIC_ADDRESS_FAMILY_INET &&        \
+                               Address.Ipv4.sin_addr.s_addr == htonl(INADDR_LOOPBACK)) || \
+                              (Address.Ip.sa_family == QUIC_ADDRESS_FAMILY_INET6 &&       \
+                               IN6_IS_ADDR_LOOPBACK(&Address.Ipv6.sin6_addr)))
 
 #else
 
@@ -194,7 +734,12 @@ CxPlatConvertFromMappedV6(
 }
 #pragma warning(pop)
 
-#endif
+#define IS_LOOPBACK(Address) ((Address.si_family == QUIC_ADDRESS_FAMILY_INET &&                \
+                               IN4_IS_ADDR_LOOPBACK(&Address.Ipv4.sin_addr)) ||                \
+                              (Address.si_family == QUIC_ADDRESS_FAMILY_INET6 &&               \
+                               IN6_IS_ADDR_LOOPBACK(&Address.Ipv6.sin6_addr)))
+
+#endif // _WIN32
 
 //
 // Crypt Initialization
@@ -214,29 +759,16 @@ CxPlatCryptUninitialize(
 // Platform Worker APIs
 //
 
-void
-CxPlatWorkersInit(
-    void
-    );
-
-void
-CxPlatWorkersUninit(
-    void
-    );
-
 BOOLEAN
-CxPlatWorkersLazyStart(
+CxPlatWorkerPoolLazyStart(
+    _In_ CXPLAT_WORKER_POOL* WorkerPool,
     _In_opt_ QUIC_EXECUTION_CONFIG* Config
     );
 
 CXPLAT_EVENTQ*
-CxPlatWorkerGetEventQ(
+CxPlatWorkerPoolGetEventQ(
+    _In_ const CXPLAT_WORKER_POOL* WorkerPool,
     _In_ uint16_t Index // Into the config processor array
-    );
-
-void
-CxPlatDataPathProcessCqe(
-    _In_ CXPLAT_CQE* Cqe
     );
 
 BOOLEAN // Returns FALSE no work was done.
@@ -245,17 +777,530 @@ CxPlatDataPathPoll(
     _Out_ BOOLEAN* RemoveFromPolling
     );
 
-typedef struct DATAPATH_SQE {
-    uint32_t CqeType;
-#ifdef CXPLAT_SQE
-    CXPLAT_SQE Sqe;
+//
+// Queries the raw datapath stack for the total size needed to allocate the
+// datapath structure.
+//
+_IRQL_requires_max_(PASSIVE_LEVEL)
+size_t
+CxPlatDpRawGetDatapathSize(
+    _In_opt_ const QUIC_EXECUTION_CONFIG* Config
+    );
+
+#if defined(CX_PLATFORM_LINUX)
+
+typedef struct CXPLAT_DATAPATH_PARTITION CXPLAT_DATAPATH_PARTITION;
+
+//
+// Socket context.
+//
+typedef struct QUIC_CACHEALIGN CXPLAT_SOCKET_CONTEXT {
+
+    //
+    // The datapath binding this socket context belongs to.
+    //
+    CXPLAT_SOCKET* Binding;
+
+    //
+    // The datapath proc context this socket belongs to.
+    //
+    CXPLAT_DATAPATH_PARTITION* DatapathPartition;
+
+    //
+    // The socket FD used by this socket context.
+    //
+    int SocketFd;
+
+    //
+    // The submission queue event for shutdown.
+    //
+    CXPLAT_SQE ShutdownSqe;
+
+    //
+    // The submission queue event for IO.
+    //
+    CXPLAT_SQE IoSqe;
+
+    //
+    // The submission queue event for flushing the send queue.
+    //
+    CXPLAT_SQE FlushTxSqe;
+
+    //
+    // The head of list containg all pending sends on this socket.
+    //
+    CXPLAT_LIST_ENTRY TxQueue;
+
+    //
+    // Lock around the PendingSendData list.
+    //
+    CXPLAT_LOCK TxQueueLock;
+
+    //
+    // Rundown for synchronizing clean up with upcalls.
+    //
+    CXPLAT_RUNDOWN_REF UpcallRundown;
+
+    //
+    // Inidicates the SQEs have been initialized.
+    //
+    BOOLEAN SqeInitialized : 1;
+
+    //
+    // Inidicates if the socket has started IO processing.
+    //
+    BOOLEAN IoStarted : 1;
+
+#if DEBUG
+    uint8_t Uninitialized : 1;
+    uint8_t Freed : 1;
 #endif
-} DATAPATH_SQE;
 
-#define CXPLAT_CQE_TYPE_WORKER_WAKE         CXPLAT_CQE_TYPE_QUIC_BASE + 1
-#define CXPLAT_CQE_TYPE_WORKER_UPDATE_POLL  CXPLAT_CQE_TYPE_QUIC_BASE + 2
-#define CXPLAT_CQE_TYPE_SOCKET_SHUTDOWN     CXPLAT_CQE_TYPE_QUIC_BASE + 3
-#define CXPLAT_CQE_TYPE_SOCKET_IO           CXPLAT_CQE_TYPE_QUIC_BASE + 4
-#define CXPLAT_CQE_TYPE_SOCKET_FLUSH_TX     CXPLAT_CQE_TYPE_QUIC_BASE + 5
+    CXPLAT_SOCKET* AcceptSocket;
 
-extern CXPLAT_RUNDOWN_REF CxPlatWorkerRundown;
+} CXPLAT_SOCKET_CONTEXT;
+
+//
+// Datapath binding.
+//
+typedef struct CXPLAT_SOCKET {
+    CXPLAT_SOCKET_COMMON;
+
+    //
+    // Synchronization mechanism for cleanup.
+    //
+    CXPLAT_REF_COUNT RefCount;
+
+    //
+    // The size of a receive buffer's payload.
+    //
+    uint32_t RecvBufLen;
+
+    //
+    // Indicates the binding connected to a remote IP address.
+    //
+    BOOLEAN Connected : 1;
+
+    //
+    // Socket type.
+    //
+    uint8_t Type : 2; // CXPLAT_SOCKET_TYPE
+
+    //
+    // Flag indicates the socket has more than one socket, affinitized to all
+    // the processors.
+    //
+    uint8_t NumPerProcessorSockets : 1;
+
+    //
+    // Flag indicates the socket has a default remote destination.
+    //
+    BOOLEAN HasFixedRemoteAddress : 1;
+
+    //
+    // Flag indicates the socket indicated a disconnect event.
+    //
+    uint8_t DisconnectIndicated : 1;
+
+    //
+    // Flag indicates the binding is being used for PCP.
+    //
+    BOOLEAN PcpBinding : 1;
+
+#if DEBUG
+    uint8_t Uninitialized : 1;
+    uint8_t Freed : 1;
+#endif
+
+    uint8_t UseTcp : 1;                  // Quic over TCP
+
+    uint8_t RawSocketAvailable : 1;
+
+    //
+    // Set of socket contexts one per proc.
+    //
+    CXPLAT_SOCKET_CONTEXT SocketContexts[];
+
+} CXPLAT_SOCKET;
+
+//
+// A per processor datapath context.
+//
+typedef struct QUIC_CACHEALIGN CXPLAT_DATAPATH_PARTITION {
+
+    //
+    // A pointer to the datapath.
+    //
+    CXPLAT_DATAPATH* Datapath;
+
+    //
+    // The event queue for this proc context.
+    //
+    CXPLAT_EVENTQ* EventQ;
+
+    //
+    // Synchronization mechanism for cleanup.
+    //
+    CXPLAT_REF_COUNT RefCount;
+
+    //
+    // The ideal processor of the context.
+    //
+    uint16_t PartitionIndex;
+
+#if DEBUG
+    uint8_t Uninitialized : 1;
+#endif
+
+    //
+    // Pool of receive packet contexts and buffers to be shared by all sockets
+    // on this core.
+    //
+    CXPLAT_POOL RecvBlockPool;
+
+    //
+    // Pool of send packet contexts and buffers to be shared by all sockets
+    // on this core.
+    //
+    CXPLAT_POOL SendBlockPool;
+
+} CXPLAT_DATAPATH_PARTITION;
+
+//
+// Represents a datapath object.
+//
+
+typedef struct CXPLAT_DATAPATH {
+    CXPLAT_DATAPATH_COMMON;
+
+    //
+    // Synchronization mechanism for cleanup.
+    //
+    CXPLAT_REF_COUNT RefCount;
+
+    //
+    // The proc count to create per proc datapath state.
+    //
+    uint32_t PartitionCount;
+
+    //
+    // The length of the CXPLAT_SEND_DATA. Calculated based on the support level
+    // for GSO. No GSO support requires a larger send data to hold the extra
+    // iovec structs.
+    //
+    uint32_t SendDataSize;
+
+    //
+    // When not using GSO, we preallocate multiple iovec structs to use with
+    // sendmmsg (to simulate GSO).
+    //
+    uint32_t SendIoVecCount;
+
+    //
+    // The length of the CXPLAT_RECV_DATA and client data part of the
+    // DATAPATH_RX_IO_BLOCK.
+    //
+    uint32_t RecvBlockStride;
+
+    //
+    // The offset of the raw buffer in the DATAPATH_RX_IO_BLOCK.
+    //
+    uint32_t RecvBlockBufferOffset;
+
+    //
+    // The total length of the DATAPATH_RX_IO_BLOCK. Calculated based on the
+    // support level for GRO. No GRO only uses a single CXPLAT_RECV_DATA and
+    // client data, while GRO allows for multiple.
+    //
+    uint32_t RecvBlockSize;
+
+#if DEBUG
+    uint8_t Uninitialized : 1;
+    uint8_t Freed : 1;
+#endif
+
+    uint8_t UseTcp : 1;
+
+    //
+    // The per proc datapath contexts.
+    //
+    CXPLAT_DATAPATH_PARTITION Partitions[];
+
+} CXPLAT_DATAPATH;
+
+#endif // CX_PLATFORM_LINUX
+
+#if defined(CX_PLATFORM_LINUX) || _WIN32
+
+typedef struct CXPLAT_SOCKET_RAW CXPLAT_SOCKET_RAW;
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+SocketCreateUdp(
+    _In_ CXPLAT_DATAPATH* DataPath,
+    _In_ const CXPLAT_UDP_CONFIG* Config,
+    _Out_ CXPLAT_SOCKET** NewSocket
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+SocketCreateTcp(
+    _In_ CXPLAT_DATAPATH* Datapath,
+    _In_opt_ const QUIC_ADDR* LocalAddress,
+    _In_ const QUIC_ADDR* RemoteAddress,
+    _In_opt_ void* CallbackContext,
+    _Out_ CXPLAT_SOCKET** Socket
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+SocketCreateTcpListener(
+    _In_ CXPLAT_DATAPATH* Datapath,
+    _In_opt_ const QUIC_ADDR* LocalAddress,
+    _In_opt_ void* RecvCallbackContext,
+    _Out_ CXPLAT_SOCKET** NewSocket
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+SocketDelete(
+    _In_ CXPLAT_SOCKET* Socket
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+DataPathInitialize(
+    _In_ uint32_t ClientRecvDataLength,
+    _In_opt_ const CXPLAT_UDP_DATAPATH_CALLBACKS* UdpCallbacks,
+    _In_opt_ const CXPLAT_TCP_DATAPATH_CALLBACKS* TcpCallbacks,
+    _In_ CXPLAT_WORKER_POOL* WorkerPool,
+    _In_opt_ QUIC_EXECUTION_CONFIG* Config,
+    _Out_ CXPLAT_DATAPATH** NewDatapath
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+DataPathUninitialize(
+    _In_ CXPLAT_DATAPATH* Datapath
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+DataPathUpdateConfig(
+    _In_ CXPLAT_DATAPATH* Datapath,
+    _In_ QUIC_EXECUTION_CONFIG* Config
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+uint32_t
+DataPathGetSupportedFeatures(
+    _In_ CXPLAT_DATAPATH* Datapath
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN
+DataPathIsPaddingPreferred(
+    _In_ CXPLAT_DATAPATH* Datapath
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+RecvDataReturn(
+    _In_ CXPLAT_RECV_DATA* RecvDataChain
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+_Success_(return != NULL)
+CXPLAT_SEND_DATA*
+SendDataAlloc(
+    _In_ CXPLAT_SOCKET* Socket,
+    _Inout_ CXPLAT_SEND_CONFIG* Config
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+SendDataFree(
+    _In_ CXPLAT_SEND_DATA* SendData
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+_Success_(return != NULL)
+QUIC_BUFFER*
+SendDataAllocBuffer(
+    _In_ CXPLAT_SEND_DATA* SendData,
+    _In_ uint16_t MaxBufferLength
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+SendDataFreeBuffer(
+    _In_ CXPLAT_SEND_DATA* SendData,
+    _In_ QUIC_BUFFER* Buffer
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN
+SendDataIsFull(
+    _In_ CXPLAT_SEND_DATA* SendData
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+SocketSend(
+    _In_ CXPLAT_SOCKET* Socket,
+    _In_ const CXPLAT_ROUTE* Route,
+    _In_ CXPLAT_SEND_DATA* SendData
+    );
+
+CXPLAT_SOCKET*
+CxPlatRawToSocket(
+    _In_ CXPLAT_SOCKET_RAW* Socket
+    );
+
+CXPLAT_SOCKET_RAW*
+CxPlatSocketToRaw(
+    _In_ CXPLAT_SOCKET* Socketh
+    );
+
+uint32_t
+CxPlatGetRawSocketSize(void);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+RawSocketCreateUdp(
+    _In_ CXPLAT_DATAPATH_RAW* DataPath,
+    _In_ const CXPLAT_UDP_CONFIG* Config,
+    _Inout_ CXPLAT_SOCKET_RAW* NewSocket
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+RawSocketDelete(
+    _In_ CXPLAT_SOCKET_RAW* Socket
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+RawDataPathInitialize(
+    _In_ uint32_t ClientRecvContextLength,
+    _In_opt_ QUIC_EXECUTION_CONFIG* Config,
+    _In_opt_ const CXPLAT_DATAPATH* ParentDataPath,
+    _In_ CXPLAT_WORKER_POOL* WorkerPool,
+    _Out_ CXPLAT_DATAPATH_RAW** DataPath
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+RawDataPathUninitialize(
+    _In_ CXPLAT_DATAPATH_RAW* Datapath
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+RawDataPathUpdateConfig(
+    _In_ CXPLAT_DATAPATH_RAW* Datapath,
+    _In_ QUIC_EXECUTION_CONFIG* Config
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+uint32_t
+RawDataPathGetSupportedFeatures(
+    _In_ CXPLAT_DATAPATH_RAW* Datapath
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN
+RawDataPathIsPaddingPreferred(
+    _In_ CXPLAT_DATAPATH* Datapath
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+RawSocketUpdateQeo(
+    _In_ CXPLAT_SOCKET_RAW* Socket,
+    _In_reads_(OffloadCount)
+        const CXPLAT_QEO_CONNECTION* Offloads,
+    _In_ uint32_t OffloadCount
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+uint16_t
+RawSocketGetLocalMtu(
+    _In_ CXPLAT_SOCKET_RAW* Socket
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+RawRecvDataReturn(
+    _In_ CXPLAT_RECV_DATA* RecvDataChain
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+_Success_(return != NULL)
+CXPLAT_SEND_DATA*
+RawSendDataAlloc(
+    _In_ CXPLAT_SOCKET_RAW* Socket,
+    _Inout_ CXPLAT_SEND_CONFIG* Config
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+RawSendDataFree(
+    _In_ CXPLAT_SEND_DATA* SendData
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+_Success_(return != NULL)
+QUIC_BUFFER*
+RawSendDataAllocBuffer(
+    _In_ CXPLAT_SEND_DATA* SendData,
+    _In_ uint16_t MaxBufferLength
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+RawSendDataFreeBuffer(
+    _In_ CXPLAT_SEND_DATA* SendData,
+    _In_ QUIC_BUFFER* Buffer
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN
+RawSendDataIsFull(
+    _In_ CXPLAT_SEND_DATA* SendData
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+QUIC_STATUS
+RawSocketSend(
+    _In_ CXPLAT_SOCKET_RAW* Socket,
+    _In_ const CXPLAT_ROUTE* Route,
+    _In_ CXPLAT_SEND_DATA* SendData
+    );
+
+void
+RawResolveRouteComplete(
+    _In_ void* Context,
+    _Inout_ CXPLAT_ROUTE* Route,
+    _In_reads_bytes_(6) const uint8_t* PhysicalAddress,
+    _In_ uint8_t PathId
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+RawResolveRoute(
+    _In_ CXPLAT_SOCKET_RAW* Sock,
+    _Inout_ CXPLAT_ROUTE* Route,
+    _In_ uint8_t PathId,
+    _In_ void* Context,
+    _In_ CXPLAT_ROUTE_RESOLUTION_CALLBACK_HANDLER Callback
+    );
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+RawUpdateRoute(
+    _Inout_ CXPLAT_ROUTE* DstRoute,
+    _In_ CXPLAT_ROUTE* SrcRoute
+    );
+
+#endif // CX_PLATFORM_LINUX || _WIN32

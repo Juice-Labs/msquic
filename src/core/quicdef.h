@@ -17,6 +17,7 @@ typedef struct QUIC_CONNECTION QUIC_CONNECTION;
 typedef struct QUIC_STREAM QUIC_STREAM;
 typedef struct QUIC_PACKET_BUILDER QUIC_PACKET_BUILDER;
 typedef struct QUIC_PATH QUIC_PATH;
+typedef struct QUIC_RX_PACKET QUIC_RX_PACKET;
 
 /*************************************************************
                     PROTOCOL CONSTANTS
@@ -101,6 +102,12 @@ typedef struct QUIC_PATH QUIC_PATH;
 // delay.
 //
 #define QUIC_MIN_ACK_SEND_NUMBER                2
+
+//
+// The value for Reordering threshold when no ACK_FREQUENCY frame is received.
+// This means that the receiver will immediately acknowledge any out-of-order packets.
+//
+#define QUIC_MIN_REORDERING_THRESHOLD           1
 
 //
 // The size of the stateless reset token.
@@ -194,16 +201,6 @@ typedef struct QUIC_PATH QUIC_PATH;
 #define QUIC_MAX_CRYPTO_BATCH_COUNT             8
 
 //
-// The maximum number of received packets that may be queued on a single
-// connection. When this limit is reached, any additional packets are dropped.
-//
-#ifdef _KERNEL_MODE
-#define QUIC_MAX_RECEIVE_QUEUE_COUNT            1024
-#else
-#define QUIC_MAX_RECEIVE_QUEUE_COUNT            8192
-#endif
-
-//
 // The maximum number of received packets that may be processed in a single
 // flush operation.
 //
@@ -249,10 +246,10 @@ typedef struct QUIC_PATH QUIC_PATH;
 #define QUIC_MAX_RANGE_ACK_PACKETS              0x800       // 2048
 #define QUIC_MAX_RANGE_DECODE_ACKS              0x1000      // 4096
 
-CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_ALLOC_SIZE), L"Must be power of two");
-CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_DUPLICATE_PACKETS), L"Must be power of two");
-CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_ACK_PACKETS), L"Must be power of two");
-CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_DECODE_ACKS), L"Must be power of two");
+CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_ALLOC_SIZE), "Must be power of two");
+CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_DUPLICATE_PACKETS), "Must be power of two");
+CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_ACK_PACKETS), "Must be power of two");
+CXPLAT_STATIC_ASSERT(IS_POWER_OF_TWO(QUIC_MAX_RANGE_DECODE_ACKS), "Must be power of two");
 
 //
 // Minimum MTU allowed to be configured. Must be able to fit a
@@ -296,7 +293,7 @@ CXPLAT_STATIC_ASSERT(QUIC_INITIAL_PACKET_LENGTH >= QUIC_MIN_INITIAL_PACKET_LENGT
 //
 // The number of milliseconds that must elapse before a connection is
 // considered disconnected; that is, the time a connection waits for an
-// expected acknowledgement for packets it has sent before it considers the
+// expected acknowledgment for packets it has sent before it considers the
 // path dead.
 //
 #define QUIC_DEFAULT_DISCONNECT_TIMEOUT         16000   // 16 seconds, in ms
@@ -309,7 +306,7 @@ CXPLAT_STATIC_ASSERT(QUIC_INITIAL_PACKET_LENGTH >= QUIC_MIN_INITIAL_PACKET_LENGT
 
 CXPLAT_STATIC_ASSERT(
     QUIC_DEFAULT_DISCONNECT_TIMEOUT <= QUIC_MAX_DISCONNECT_TIMEOUT,
-    L"Default disconnect timeout should always be less than max");
+    "Default disconnect timeout should always be less than max");
 
 //
 // The default connection idle timeout (in milliseconds).
@@ -357,7 +354,7 @@ CXPLAT_STATIC_ASSERT(
 // The minimum number of bytes of send allowance we must have before we will
 // send another packet.
 //
-#define QUIC_MIN_SEND_ALLOWANCE                 75
+#define QUIC_MIN_SEND_ALLOWANCE                 76  // Magic number to indicate a threshold of 'enough' allowance to send another packet.
 
 //
 // The minimum buffer space that we require before we will pack another
@@ -522,9 +519,24 @@ CXPLAT_STATIC_ASSERT(
 #define QUIC_DEFAULT_ENCRYPTION_OFFLOAD_ALLOWED      FALSE
 
 //
-// The default settings for allowing Reliable Reset support. 
+// The default settings for allowing Reliable Reset support.
 //
 #define QUIC_DEFAULT_RELIABLE_RESET_ENABLED          FALSE
+
+//
+// The default settings for allowing One-Way Delay support.
+//
+#define QUIC_DEFAULT_ONE_WAY_DELAY_ENABLED           FALSE
+
+//
+// The default settings for allowing Network Statistics event to be raised.
+//
+#define QUIC_DEFAULT_NET_STATS_EVENT_ENABLED         FALSE
+
+//
+// The default settings for using multiple parallel receives for streams.
+//
+#define QUIC_DEFAULT_STREAM_MULTI_RECEIVE_ENABLED    FALSE
 
 //
 // The number of rounds in Cubic Slow Start to sample RTT.
@@ -580,6 +592,9 @@ CXPLAT_STATIC_ASSERT(
 #define QUIC_TP_FLAG_CIBIR_ENCODING                         0x00200000
 #define QUIC_TP_FLAG_GREASE_QUIC_BIT                        0x00400000
 #define QUIC_TP_FLAG_RELIABLE_RESET_ENABLED                 0x00800000
+#define QUIC_TP_FLAG_TIMESTAMP_RECV_ENABLED                 0x01000000
+#define QUIC_TP_FLAG_TIMESTAMP_SEND_ENABLED                 0x02000000
+#define QUIC_TP_FLAG_TIMESTAMP_SHIFT                        24
 
 #define QUIC_TP_MAX_PACKET_SIZE_DEFAULT                     65527
 #define QUIC_TP_MAX_UDP_PAYLOAD_SIZE_MIN                    1200
@@ -627,6 +642,9 @@ CXPLAT_STATIC_ASSERT(
 #define QUIC_SETTING_HYSTART_ENABLED                "HyStartEnabled"
 #define QUIC_SETTING_ENCRYPTION_OFFLOAD_ALLOWED     "EncryptionOffloadAllowed"
 #define QUIC_SETTING_RELIABLE_RESET_ENABLED         "ReliableResetEnabled"
+#define QUIC_SETTING_ONE_WAY_DELAY_ENABLED          "OneWayDelayEnabled"
+#define QUIC_SETTING_NET_STATS_EVENT_ENABLED        "NetStatsEventEnabled"
+#define QUIC_SETTING_STREAM_MULTI_RECEIVE_ENABLED   "StreamMultiReceiveEnabled"
 
 #define QUIC_SETTING_INITIAL_WINDOW_PACKETS         "InitialWindowPackets"
 #define QUIC_SETTING_SEND_IDLE_TIMEOUT_MS           "SendIdleTimeoutMs"
@@ -642,6 +660,9 @@ CXPLAT_STATIC_ASSERT(
 #define QUIC_SETTING_MAX_TLS_CLIENT_SEND_BUFFER     "TlsClientMaxSendBuffer"
 #define QUIC_SETTING_MAX_TLS_SERVER_SEND_BUFFER     "TlsServerMaxSendBuffer"
 #define QUIC_SETTING_STREAM_FC_WINDOW_SIZE          "StreamRecvWindowDefault"
+#define QUIC_SETTING_STREAM_FC_BIDI_LOCAL_WINDOW_SIZE "StreamRecvWindowBidiLocalDefault"
+#define QUIC_SETTING_STREAM_FC_BIDI_REMOTE_WINDOW_SIZE "StreamRecvWindowBidiRemoteDefault"
+#define QUIC_SETTING_STREAM_FC_UNIDI_WINDOW_SIZE    "StreamRecvWindowUnidiDefault"
 #define QUIC_SETTING_STREAM_RECV_BUFFER_SIZE        "StreamRecvBufferDefault"
 #define QUIC_SETTING_CONN_FLOW_CONTROL_WINDOW       "ConnFlowControlWindow"
 

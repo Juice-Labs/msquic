@@ -67,6 +67,9 @@ This script runs the MsQuic tests.
 .Parameter DuoNic
     Uses DuoNic instead of loopback (DuoNic must already be installed via 'prepare-machine.ps1 -InstallDuoNic').
 
+.Parameter NumIterations
+    Number of times to run this particular command. Catches tricky edge cases due to random nature of networks.
+
 .EXAMPLE
     test.ps1
 
@@ -85,6 +88,8 @@ This script runs the MsQuic tests.
 .EXAMPLE
     test.ps1 -LogProfile Full.Verbose -Compress
 
+.EXAMPLE
+    test.ps1 -Filter ParameterValidation* -NumIterations 10
 #>
 
 param (
@@ -129,7 +134,7 @@ param (
     [switch]$BreakOnFailure = $false,
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet("None", "Basic.Light", "Basic.Verbose", "Full.Light", "Full.Verbose")]
+    [ValidateSet("None", "Basic.Light", "Datapath.Light", "Datapath.Verbose", "Stacks.Light", "Stacks.Verbose", "RPS.Light", "RPS.Verbose", "Performance.Light", "Basic.Verbose", "Performance.Light", "Performance.Verbose", "Full.Light", "Full.Verbose", "SpinQuic.Light", "SpinQuicWarnings.Light")]
     [string]$LogProfile = "None",
 
     [Parameter(Mandatory = $false)]
@@ -172,7 +177,10 @@ param (
     [switch]$UseQtip = $false,
 
     [Parameter(Mandatory = $false)]
-    [string]$OsRunner = ""
+    [string]$OsRunner = "",
+
+    [Parameter(Mandatory = $false)]
+    [int]$NumIterations = 1
 )
 
 Set-StrictMode -Version 'Latest'
@@ -209,16 +217,16 @@ if ($CodeCoverage) {
     }
 }
 
-if ($UseXdp) {
-    # Helper for XDP usage
-    $DuoNic = $true
-}
-
 $BuildConfig = & (Join-Path $PSScriptRoot get-buildconfig.ps1) -Tls $Tls -Arch $Arch -ExtraArtifactDir $ExtraArtifactDir -Config $Config
 
 $Tls = $BuildConfig.Tls
 $Arch = $BuildConfig.Arch
 $RootArtifactDir = $BuildConfig.ArtifactsDir
+
+if ($UseXdp) {
+    # Helper for XDP usage
+    $DuoNic = $true
+}
 
 # Root directory of the project.
 $RootDir = Split-Path $PSScriptRoot -Parent
@@ -344,12 +352,27 @@ if (![string]::IsNullOrWhiteSpace($ExtraArtifactDir)) {
     $TestArguments += " -ExtraArtifactDir $ExtraArtifactDir"
 }
 
-# Run the script.
+$TestPaths = @()
 if (!$Kernel -and !$SkipUnitTests) {
-    Invoke-Expression ($RunTest + " -Path $MsQuicPlatTest " + $TestArguments)
-    Invoke-Expression ($RunTest + " -Path $MsQuicCoreTest " + $TestArguments)
+    $TestPaths += $MsQuicPlatTest
+    $TestPaths += $MsQuicCoreTest
 }
-Invoke-Expression ($RunTest + " -Path $MsQuicTest " + $TestArguments)
+$TestPaths += $MsQuicTest
+
+for ($iteration = 1; $iteration -le $NumIterations; $iteration++) {
+    if ($NumIterations -gt 1) {
+        Write-Host "------- Iteration $iteration -------"
+    }
+    # Run the script.
+    foreach ($TestPath in $TestPaths) {
+        if ($IsLinux -and $UseXdp) {
+            $NOFILE = Invoke-Expression "bash -c 'ulimit -n'"
+            Invoke-Expression ('/usr/bin/sudo bash -c "ulimit -n $NOFILE && pwsh $RunTest -Path $TestPath $TestArguments"')
+        } else {
+            Invoke-Expression ($RunTest + " -Path $TestPath " + $TestArguments)
+        }
+    }
+}
 
 if ($CodeCoverage) {
     # Merge code coverage results

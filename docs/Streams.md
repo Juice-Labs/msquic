@@ -64,6 +64,12 @@ When the send has been completely shut down the app will get a `QUIC_STREAM_EVEN
 
 An app can opt in to sending stream data with 0-RTT keys (if available) by including the `QUIC_SEND_FLAG_ALLOW_0_RTT` flag on [StreamSend](api/StreamSend.md) call. MsQuic doesn't make any guarantees that the data will actually be sent with 0-RTT keys. There are several reasons it may not happen, such as keys not being available, packet loss, flow control, etc.
 
+## Cancel On Loss
+
+In case it is desirable to cancel a stream when packet loss is deteced instead of retransmitting the affected packets, the `QUIC_SEND_FLAG_CANCEL_ON_LOSS` can be supplied on a [StreamSend](api/StreamSend.md) call. Doing so will irreversibly switch the associated stream to this behavior. This includes *every* subsequent send call on the same stream, even if the call itself does not include the above flag.
+
+If a stream gets canceled because it is in 'cancel on loss' mode, a `QUIC_STREAM_EVENT_CANCEL_ON_LOSS` event will get emitted. The event allows the app to provide an error code that is communicated to the peer via a `QUIC_STREAM_EVENT_PEER_SEND_ABORTED` event.
+
 # Receiving
 
 Data is received and delivered to apps via the `QUIC_STREAM_EVENT_RECEIVE` event. The event indicates zero, one or more contiguous buffers up to the application.
@@ -72,13 +78,13 @@ Typically, the buffer count is one, which means that most events will include a 
 
 When the buffer count is 0, it signifies the reception of a QUIC frame with empty data, which also indicates the end of stream data.
 
-Currently, the maximum buffer count is 2 in the case of partial receive, where only a portion of the buffer data is consumed (as explained below). However, it is strongly advised not to assume in application code that the upper limit is always 2. This caution is important because future releases may incorporate multiple circular buffers to enhance performance, leading to potential changes in the buffer count limit.
+Currently, the maximum buffer count is 3 in the case of partial receive, where only a portion of the buffer data is consumed (as explained below). However, it is strongly advised not to assume in application code that the upper limit is always 3. This caution is important because future releases may change internal algorithm, leading to potential changes in the buffer count limit.
 
 The app then may respond to the event in a number of ways:
 
 ## Synchronous vs Asynchronous
 
-The app has the option of either processing the received data in the callback (synchronous) or queuing the work to a separate thread (asynchronous). If the app processes the data synchronously it must do so in a timely manner. Any significant delays will delay other QUIC processing (such as sending acknowledgements), which can cause protocol issues (dropped connections).
+The app has the option of either processing the received data in the callback (synchronous) or queuing the work to a separate thread (asynchronous). If the app processes the data synchronously it must do so in a timely manner. Any significant delays will delay other QUIC processing (such as sending acknowledgments), which can cause protocol issues (dropped connections).
 
 If the app wants to queue the data to a separate thread, the app must return `QUIC_STATUS_PENDING` from the receive callback. This informs MsQuic that the app still has an outstanding reference on the buffers, and it will not modify or free them. Once the app is done with the buffers it must call [StreamReceiveComplete](api/StreamReceiveComplete.md).
 
@@ -95,3 +101,11 @@ Any value less than or equal to the initial **TotalBufferLength** value is allow
 Whenever a receive isn't fully accepted by the app, additional receive events are immediately disabled. The app is assumed to be at capacity and not able to consume more until further indication. To re-enable receive callbacks, the app must call [StreamReceiveSetEnabled](api/StreamReceiveSetEnabled.md).
 
 There are cases where an app may want to partially accept the current data, but still immediately get a callback with the rest of the data. To do this (only works in the synchronous flow) the app must return `QUIC_STATUS_CONTINUE`.
+
+## Multi Receive mode
+
+Setting [`StreamMultiReceiveEnabled`](./Settings.md) an app can continue getting indicated by `QUIC_STREAM_EVENT_RECEIVE` without returning `QUIC_STATUS_SUCCESS` nor calling [StreamReceiveComplete](api/StreamReceiveComplete.md).
+
+This changes internal receive buffer more efficient for continuous receiving.
+
+The app need to keep track of total `TotalBufferLength` to later call [StreamReceiveComplete](api/StreamReceiveComplete.md) appropriately.

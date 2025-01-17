@@ -144,7 +144,6 @@ QuicDatagramUninitialize(
     _In_ QUIC_DATAGRAM* Datagram
     )
 {
-    QuicDatagramSendShutdown(Datagram);
     CXPLAT_DBG_ASSERT(Datagram->SendQueue == NULL);
     CXPLAT_DBG_ASSERT(Datagram->ApiQueue == NULL);
     CxPlatDispatchLockUninitialize(&Datagram->ApiQueueLock);
@@ -328,6 +327,7 @@ QuicDatagramQueueSend(
 {
     QUIC_STATUS Status;
     BOOLEAN QueueOper = TRUE;
+    const BOOLEAN IsPriority = !!(SendRequest->Flags & QUIC_SEND_FLAG_PRIORITY_WORK);
     QUIC_CONNECTION* Connection = QuicDatagramGetConnection(Datagram);
 
     CxPlatDispatchLockAcquire(&Datagram->ApiQueueLock);
@@ -363,11 +363,16 @@ QuicDatagramQueueSend(
         goto Exit;
     }
 
+    //
+    // From here on, we cannot fail the call because the stream has been queued
+    // and possibly already started to be processed.
+    //
+    Status = QUIC_STATUS_PENDING;
+
     if (QueueOper) {
         QUIC_OPERATION* Oper =
             QuicOperationAlloc(Connection->Worker, QUIC_OPER_TYPE_API_CALL);
         if (Oper == NULL) {
-            Status = QUIC_STATUS_OUT_OF_MEMORY;
             QuicTraceEvent(
                 AllocFailure,
                 "Allocation of '%s' failed. (%llu bytes)",
@@ -375,15 +380,20 @@ QuicDatagramQueueSend(
                 0);
             goto Exit;
         }
+
+        // TODO - Kill the connection?
+
         Oper->API_CALL.Context->Type = QUIC_API_TYPE_DATAGRAM_SEND;
 
         //
         // Queue the operation but don't wait for the completion.
         //
-        QuicConnQueueOper(Connection, Oper);
+        if (IsPriority) {
+            QuicConnQueuePriorityOper(Connection, Oper);
+        } else {
+            QuicConnQueueOper(Connection, Oper);
+        }
     }
-
-    Status = QUIC_STATUS_PENDING;
 
 Exit:
 
@@ -538,7 +548,7 @@ _IRQL_requires_max_(PASSIVE_LEVEL)
 BOOLEAN
 QuicDatagramProcessFrame(
     _In_ QUIC_DATAGRAM* Datagram,
-    _In_ const CXPLAT_RECV_PACKET* const Packet,
+    _In_ const QUIC_RX_PACKET* const Packet,
     _In_ QUIC_FRAME_TYPE FrameType,
     _In_ uint16_t BufferLength,
     _In_reads_bytes_(BufferLength)
@@ -577,4 +587,41 @@ QuicDatagramProcessFrame(
     QuicPerfCounterAdd(QUIC_PERF_COUNTER_APP_RECV_BYTES, QuicBuffer.Length);
 
     return TRUE;
+}
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+QuicDatagramCancelBlocked(
+    _In_ QUIC_CONNECTION* Connection
+    )
+{
+    QUIC_DATAGRAM* Datagram = &Connection->Datagram;
+    QUIC_SEND_REQUEST** SendQueue = &Datagram->SendQueue;
+
+    if (*SendQueue == NULL) {
+        return;
+    }
+
+    do {
+        if ((*SendQueue)->Flags & QUIC_SEND_FLAG_CANCEL_ON_BLOCKED) {
+            QUIC_SEND_REQUEST* SendRequest = *SendQueue;
+            if (Datagram->PrioritySendQueueTail == &SendRequest->Next) {
+                Datagram->PrioritySendQueueTail = SendQueue;
+            }
+            *SendQueue = SendRequest->Next;
+            QuicDatagramCancelSend(Connection, SendRequest);
+        } else {
+            SendQueue = &((*SendQueue)->Next);
+        }
+    } while (*SendQueue != NULL);
+    
+    Datagram->SendQueueTail = SendQueue;
+
+    if (Datagram->SendQueue != NULL) {
+        QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_DATAGRAM);
+    } else {
+        QuicSendClearSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_DATAGRAM);
+    }
+
+    QuicDatagramValidate(Datagram);
 }

@@ -68,10 +68,13 @@ param (
     [switch]$InstallJom,
 
     [Parameter(Mandatory = $false)]
-    [switch]$InstallXdpSdk,
+    [switch]$InstallPerl,
 
     [Parameter(Mandatory = $false)]
     [switch]$UseXdp,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ForceXdpInstall,
 
     [Parameter(Mandatory = $false)]
     [switch]$InstallArm64Toolchain,
@@ -100,6 +103,21 @@ Set-StrictMode -Version 'Latest'
 $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+$IsUbuntu2404 = $false
+if ($IsLinux) {
+    $IsUbuntu2404 = (Get-Content -Path /etc/os-release | Select-String -Pattern "24.04") -ne $null
+    if ($UseXdp -and !$IsUbuntu2404 -and !$ForceXdpInstall) {
+        Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! WARN !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        Write-Host "Linux XDP installs dependencies from Ubuntu 24.04 packages, which should affect your environment"
+        Write-Host "You need to understand the impact of this on your environment before proceeding"
+        $userInput = Read-Host "Type 'YES' to proceed"
+        if ($userInput -ne 'YES') {
+            Write-Output "User did not type YES. Exiting script."
+            exit
+        }
+    }
+}
+
 $PrepConfig = & (Join-Path $PSScriptRoot get-buildconfig.ps1) -Tls $Tls
 $Tls = $PrepConfig.Tls
 
@@ -107,17 +125,6 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     # This script requires PowerShell core (mostly for xplat stuff).
     Write-Error ("`nPowerShell v7.x or greater is needed for this script to work. " +
                  "Please visit https://github.com/microsoft/msquic/blob/main/docs/BUILD.md#powershell-usage")
-}
-
-if ($UseXdp) {
-    # Helper for XDP usage
-    if ($ForBuild) {
-        $InstallXdpSdk = $true;
-    }
-    if ($ForTest) {
-        $InstallXdpDriver = $true;
-        $InstallDuoNic = $true;
-    }
 }
 
 if (!$ForContainerBuild -and !$ForBuild -and !$ForTest -and !$InstallXdpDriver -and !$UninstallXdp) {
@@ -134,7 +141,6 @@ if ($ForBuild) {
     # enabled for any possible build.
     $InstallNasm = $true
     $InstallJom = $true
-    $InstallXdpSdk = $true
     $InstallCoreNetCiDeps = $true; # For kernel signing certs
 }
 
@@ -151,14 +157,17 @@ if ($ForTest) {
         $InstallSigningCertificates = $true;
     }
 
+    if ($UseXdp) {
+        $InstallXdpDriver = $true;
+        $InstallDuoNic = $true;
+    }
+
     #$InstallCodeCoverage = $true # Ideally we'd enable this by default, but it
                                   # hangs sometimes, so we only want to install
                                   # for jobs that absoultely need it.
 }
 
 if ($InstallXdpDriver) {
-    # The XDP SDK contains XDP driver, so ensure it's downloaded.
-    $InstallXdpSdk = $true
     $InstallSigningCertificates = $true;
 }
 
@@ -209,31 +218,11 @@ function Install-SigningCertificates {
 
     Write-Host "Installing driver signing certificates"
     try {
-        CertUtil.exe -addstore Root "$SetupPath\CoreNetSignRoot.cer"
-        CertUtil.exe -addstore TrustedPublisher "$SetupPath\CoreNetSignRoot.cer"
-        CertUtil.exe -addstore Root "$SetupPath\testroot-sha2.cer" # For duonic
+        CertUtil.exe -addstore Root "$SetupPath\CoreNetSignRoot.cer" 2>&1 | Out-Null
+        CertUtil.exe -addstore TrustedPublisher "$SetupPath\CoreNetSignRoot.cer" 2>&1 | Out-Null
+        CertUtil.exe -addstore Root "$SetupPath\testroot-sha2.cer" 2>&1 | Out-Null # For duonic
     } catch {
         Write-Host "WARNING: Exception encountered while installing signing certs. Drivers may not start!"
-    }
-}
-
-# Downloads the latest version of XDP (for building).
-function Install-Xdp-Sdk {
-    if (!$IsWindows) { return } # Windows only
-    $XdpPath = Join-Path $ArtifactsPath "xdp"
-    if ($Force) {
-        rm -Force -Recurse $XdpPath -ErrorAction Ignore | Out-Null
-    }
-    if (!(Test-Path $XdpPath)) {
-        Write-Host "Downloading XDP kit"
-        $ZipPath = Join-Path $ArtifactsPath "xdp.zip"
-        Invoke-WebRequest -Uri (Get-Content (Join-Path $PSScriptRoot "xdp.json") | ConvertFrom-Json).kit -OutFile $ZipPath
-        Write-Host "Extracting XDP kit"
-        Expand-Archive -Path $ZipPath -DestinationPath $XdpPath -Force
-        New-Item -Path "$ArtifactsPath\bin\xdp" -ItemType Directory -Force
-        Copy-Item -Path "$XdpPath\symbols\*" -Destination "$ArtifactsPath\bin\xdp" -Force
-        Copy-Item -Path "$XdpPath\bin\*" -Destination "$ArtifactsPath\bin\xdp" -Force
-        Remove-Item -Path $ZipPath
     }
 }
 
@@ -256,22 +245,22 @@ function Uninstall-Xdp {
         Write-Host "Uninstalling XDP driver"
         try { msiexec.exe /x $MsiPath /quiet | Out-Null } catch {}
     }
-    $XdpPath = Join-Path $ArtifactsPath "xdp"
-    if (Test-Path $XdpPath) {
-        Write-Host "Deleting XDP kit"
-        rm -Force -Recurse $XdpPath -ErrorAction Ignore | Out-Null
-    }
 }
 
 # Installs DuoNic from the CoreNet-CI repo.
 function Install-DuoNic {
-    if (!$IsWindows) { return } # Windows only
     # Install the DuoNic driver.
-    Write-Host "Installing DuoNic driver"
-    $DuoNicPath = Join-Path $SetupPath duonic
-    $DuoNicScript = (Join-Path $DuoNicPath duonic.ps1)
-    if (!(Test-Path $DuoNicScript)) { Write-Error "Missing file: $DuoNicScript" }
-    Invoke-Expression "cmd /c `"pushd $DuoNicPath && pwsh duonic.ps1 -Install`""
+    if ($IsWindows) {
+        Write-Host "Installing DuoNic driver"
+        $DuoNicPath = Join-Path $SetupPath duonic
+        $DuoNicScript = (Join-Path $DuoNicPath duonic.ps1)
+        if (!(Test-Path $DuoNicScript)) { Write-Error "Missing file: $DuoNicScript" }
+        Invoke-Expression "cmd /c `"pushd $DuoNicPath && pwsh duonic.ps1 -Install`""
+    } elseif ($IsLinux) {
+        Write-Host "Creating DuoNic endpoints"
+        $DuoNicScript = Join-Path $PSScriptRoot "duonic.sh"
+        Invoke-Expression "sudo bash $DuoNicScript install"
+    }
 }
 
 function Update-Path($NewPath) {
@@ -296,15 +285,15 @@ function Install-NASM {
         $NasmArch = "win64"
         if (![System.Environment]::Is64BitOperatingSystem) { $NasmArch = "win32" }
         try {
-            Invoke-WebRequest -Uri "https://www.nasm.us/pub/nasm/releasebuilds/$NasmVersion/win64/nasm-$NasmVersion-$NasmArch.zip" -OutFile "artifacts\nasm.zip"
+            Invoke-WebRequest -Uri "https://www.nasm.us/pub/nasm/releasebuilds/$NasmVersion/win64/nasm-$NasmVersion-$NasmArch.zip" -OutFile "$ArtifactsPath\nasm.zip"
         } catch {
             # Mirror fallback
-            Invoke-WebRequest -Uri "https://fossies.org/windows/misc/nasm-$NasmVersion-$NasmArch.zip" -OutFile "artifacts\nasm.zip"
+            Invoke-WebRequest -Uri "https://fossies.org/windows/misc/nasm-$NasmVersion-$NasmArch.zip" -OutFile "$ArtifactsPath\nasm.zip"
         }
 
         Write-Host "Extracting/installing NASM"
-        Expand-Archive -Path "artifacts\nasm.zip" -DestinationPath $env:Programfiles -Force
-        Remove-Item -Path "artifacts\nasm.zip"
+        Expand-Archive -Path "$ArtifactsPath\nasm.zip" -DestinationPath $env:Programfiles -Force
+        Remove-Item -Path "$ArtifactsPath\nasm.zip"
         Update-Path $NasmPath
     }
 }
@@ -315,19 +304,20 @@ function Install-JOM {
     $JomVersion = "1_1_3"
     $JomPath = Join-Path $env:Programfiles "jom_$JomVersion"
     $JomExe = Join-Path $JomPath "jom.exe"
+
     if (!(Test-Path $JomExe) -and $env:GITHUB_PATH -eq $null) {
         Write-Host "Downloading JOM"
         try {
-            Invoke-WebRequest -Uri "https://qt.mirror.constant.com/official_releases/jom/jom_$JomVersion.zip" -OutFile "artifacts\jom.zip"
+            Invoke-WebRequest -Uri "https://qt.mirror.constant.com/official_releases/jom/jom_$JomVersion.zip" -OutFile "$ArtifactsPath\jom.zip"
         } catch {
             # Mirror fallback
-            Invoke-WebRequest -Uri "https://mirrors.ocf.berkeley.edu/qt/official_releases/jom/jom_$JomVersion.zip" -OutFile "artifacts\jom.zip"
+            Invoke-WebRequest -Uri "https://mirrors.ocf.berkeley.edu/qt/official_releases/jom/jom_$JomVersion.zip" -OutFile "$ArtifactsPath\jom.zip"
         }
 
         Write-Host "Extracting/installing JOM"
         New-Item -Path $JomPath -ItemType Directory -Force
-        Expand-Archive -Path "artifacts\jom.zip" -DestinationPath $JomPath -Force
-        Remove-Item -Path "artifacts\jom.zip"
+        Expand-Archive -Path "$ArtifactsPath\jom.zip" -DestinationPath $JomPath -Force
+        Remove-Item -Path "$ArtifactsPath\jom.zip"
         Update-Path $JomPath
     }
 }
@@ -354,6 +344,13 @@ function Install-OpenCppCoverage {
     }
 }
 
+# Installs StrawberryPerl on Windows via Winget.
+function Install-Perl {
+    if (!$IsWindows) { return } # Windows only
+    Write-Host "Installing StrawberryPerl via winget..."
+    winget install StrawberryPerl.StrawberryPerl
+}
+
 # Checks the OS version number to see if it's recent enough (> 2019) to support
 # the necessary features for creating and installing the test certificates.
 function Win-SupportsCerts {
@@ -367,22 +364,22 @@ function Install-TestCertificates {
     if (!$IsWindows -or !(Win-SupportsCerts)) { return } # Windows only
     $DnsNames = $env:computername,"localhost","127.0.0.1","::1","192.168.1.11","192.168.1.12","fc00::1:11","fc00::1:12"
     $NewRoot = $false
-    Write-Host "Searching for MsQuicTestRoot certificate..."
+    Write-Debug "Searching for MsQuicTestRoot certificate..."
     $RootCert = Get-ChildItem -path Cert:\LocalMachine\Root\* -Recurse | Where-Object {$_.Subject -eq "CN=MsQuicTestRoot"}
     if (!$RootCert) {
         Write-Host "MsQuicTestRoot not found! Creating new MsQuicTestRoot certificate..."
         $RootCert = New-SelfSignedCertificate -Subject "CN=MsQuicTestRoot" -FriendlyName MsQuicTestRoot -KeyUsageProperty Sign -KeyUsage CertSign,DigitalSignature -CertStoreLocation cert:\CurrentUser\My -HashAlgorithm SHA256 -Provider "Microsoft Software Key Storage Provider" -KeyExportPolicy Exportable -KeyAlgorithm ECDSA_nistP521 -CurveExport CurveName -NotAfter(Get-Date).AddYears(5) -TextExtension @("2.5.29.19 = {text}ca=1&pathlength=0") -Type Custom
         $TempRootPath = Join-Path $Env:TEMP "MsQuicTestRoot.cer"
         Export-Certificate -Type CERT -Cert $RootCert -FilePath $TempRootPath
-        CertUtil.exe -addstore Root $TempRootPath
+        CertUtil.exe -addstore Root $TempRootPath 2>&1 | Out-Null
         Remove-Item $TempRootPath
         $NewRoot = $true
         Write-Host "New MsQuicTestRoot certificate installed!"
     } else {
-        Write-Host "Found existing MsQuicTestRoot certificate!"
+        Write-Debug "Found existing MsQuicTestRoot certificate!"
     }
 
-    Write-Host "Searching for MsQuicTestServer certificate..."
+    Write-Debug "Searching for MsQuicTestServer certificate..."
     $ServerCert = Get-ChildItem -path Cert:\LocalMachine\My\* -Recurse | Where-Object {$_.Subject -eq "CN=MsQuicTestServer"}
     if (!$ServerCert) {
         Write-Host "MsQuicTestServer not found! Creating new MsQuicTestServer certificate..."
@@ -393,10 +390,10 @@ function Install-TestCertificates {
         Remove-Item $TempServerPath
         Write-Host "New MsQuicTestServer certificate installed!"
     } else {
-        Write-Host "Found existing MsQuicTestServer certificate!"
+        Write-Debug "Found existing MsQuicTestServer certificate!"
     }
 
-    Write-Host "Searching for MsQuicTestExpiredServer certificate..."
+    Write-Debug "Searching for MsQuicTestExpiredServer certificate..."
     $ExpiredServerCert = Get-ChildItem -path Cert:\LocalMachine\My\* -Recurse | Where-Object {$_.Subject -eq "CN=MsQuicTestExpiredServer"}
     if (!$ExpiredServerCert) {
         Write-Host "MsQuicTestExpiredServer not found! Creating new MsQuicTestExpiredServer certificate..."
@@ -407,10 +404,10 @@ function Install-TestCertificates {
         Remove-Item $TempExpiredServerPath
         Write-Host "New MsQuicTestExpiredServer certificate installed!"
     } else {
-        Write-Host "Found existing MsQuicTestExpiredServer certificate!"
+        Write-Debug "Found existing MsQuicTestExpiredServer certificate!"
     }
 
-    Write-Host "Searching for MsQuicTestClient certificate..."
+    Write-Debug "Searching for MsQuicTestClient certificate..."
     $ClientCert = Get-ChildItem -path Cert:\LocalMachine\My\* -Recurse | Where-Object {$_.Subject -eq "CN=MsQuicTestClient"}
     if (!$ClientCert) {
         Write-Host "MsQuicTestClient not found! Creating new MsQuicTestClient certificate..."
@@ -421,10 +418,10 @@ function Install-TestCertificates {
         Remove-Item $TempClientPath
         Write-Host "New MsQuicTestClient certificate installed!"
     } else {
-        Write-Host "Found existing MsQuicTestClient certificate!"
+        Write-Debug "Found existing MsQuicTestClient certificate!"
     }
 
-    Write-Host "Searching for MsQuicTestExpiredClient certificate..."
+    Write-Debug "Searching for MsQuicTestExpiredClient certificate..."
     $ExpiredClientCert = Get-ChildItem -path Cert:\LocalMachine\My\* -Recurse | Where-Object {$_.Subject -eq "CN=MsQuicTestExpiredClient"}
     if (!$ExpiredClientCert) {
         Write-Host "MsQuicTestExpiredClient not found! Creating new MsQuicTestExpiredClient certificate..."
@@ -435,7 +432,7 @@ function Install-TestCertificates {
         Remove-Item $TempExpiredClientPath
         Write-Host "New MsQuicTestExpiredClient certificate installed!"
     } else {
-        Write-Host "Found existing MsQuicTestExpiredClient certificate!"
+        Write-Debug "Found existing MsQuicTestExpiredClient certificate!"
     }
 
     if ($NewRoot) {
@@ -465,7 +462,7 @@ function Install-DotnetTool {
 
 function Install-Clog2Text {
     Write-Host "Initializing clog submodule"
-    git submodule init submodules/clog
+    git submodule init $RootDir/submodules/clog
     git submodule update
 
     dotnet build (Join-Path $RootDir submodules clog)
@@ -475,28 +472,32 @@ function Install-Clog2Text {
 
 # We remove OpenSSL path for kernel builds because it's not needed.
 if ($ForKernel) {
-    git rm submodules/openssl
-    git rm submodules/openssl3
+    git rm $RootDir/submodules/openssl
+    git rm $RootDir/submodules/openssl3
 }
 
 if ($ForBuild -or $ForContainerBuild) {
-
     Write-Host "Initializing clog submodule"
-    git submodule init submodules/clog
+    git submodule init $RootDir/submodules/clog
+
+    if (!$IsLinux) {
+        Write-Host "Initializing XDP-for-Windows submodule"
+        git submodule init $RootDir/submodules/xdp-for-windows
+    }
 
     if ($Tls -eq "openssl") {
         Write-Host "Initializing openssl submodule"
-        git submodule init submodules/openssl
+        git submodule init $RootDir/submodules/openssl
     }
 
     if ($Tls -eq "openssl3") {
         Write-Host "Initializing openssl3 submodule"
-        git submodule init submodules/openssl3
+        git submodule init $RootDir/submodules/openssl3
     }
 
     if (!$DisableTest) {
         Write-Host "Initializing googletest submodule"
-        git submodule init submodules/googletest
+        git submodule init $RootDir/submodules/googletest
     }
 
     git submodule update --jobs=8
@@ -505,11 +506,11 @@ if ($ForBuild -or $ForContainerBuild) {
 if ($InstallCoreNetCiDeps) { Download-CoreNet-Deps }
 if ($InstallSigningCertificates) { Install-SigningCertificates }
 if ($InstallDuoNic) { Install-DuoNic }
-if ($InstallXdpSdk) { Install-Xdp-Sdk }
 if ($InstallXdpDriver) { Install-Xdp-Driver }
 if ($UninstallXdp) { Uninstall-Xdp }
 if ($InstallNasm) { Install-NASM }
 if ($InstallJOM) { Install-JOM }
+if ($InstallPerl) { Install-Perl }
 if ($InstallCodeCoverage) { Install-OpenCppCoverage }
 if ($InstallTestCertificates) { Install-TestCertificates }
 
@@ -537,6 +538,17 @@ if ($IsLinux) {
         sudo apt-get install -y ruby ruby-dev rpm
         sudo gem install public_suffix -v 4.0.7
         sudo gem install fpm
+
+        # XDP dependencies
+        if ($UseXdp) {
+            sudo apt-get -y install --no-install-recommends libc6-dev-i386 # for building xdp programs
+            if (!$IsUbuntu2404) {
+                sudo apt-add-repository "deb http://mirrors.kernel.org/ubuntu noble main" -y
+                sudo apt-get update -y
+            }
+            sudo apt-get -y install libxdp-dev libbpf-dev
+            sudo apt-get -y install libnl-3-dev libnl-genl-3-dev libnl-route-3-dev zlib1g-dev zlib1g pkg-config m4 clang libpcap-dev libelf-dev
+        }
     }
 
     if ($ForTest) {
@@ -545,6 +557,16 @@ if ($IsLinux) {
         sudo apt-get install -y lttng-tools
         sudo apt-get install -y liblttng-ust-dev
         sudo apt-get install -y gdb
+        if ($UseXdp) {
+            if (!$IsUbuntu2404) {
+                sudo apt-add-repository "deb http://mirrors.kernel.org/ubuntu noble main" -y
+                sudo apt-get update -y
+            }
+            sudo apt-get install -y libxdp1 libbpf1
+            sudo apt-get install -y libnl-3-200 libnl-route-3-200 libnl-genl-3-200
+            sudo apt-get install -y iproute2 iptables
+            Install-DuoNic
+        }
 
         # Enable core dumps for the system.
         Write-Host "Setting core dump size limit"
@@ -552,6 +574,11 @@ if ($IsLinux) {
         sudo sh -c "echo 'root hard core unlimited' >> /etc/security/limits.conf"
         sudo sh -c "echo '* soft core unlimited' >> /etc/security/limits.conf"
         sudo sh -c "echo '* hard core unlimited' >> /etc/security/limits.conf"
+        # Increase the number of file descriptors.
+        sudo sh -c "echo 'root soft nofile 1048576' >> /etc/security/limits.conf"
+        sudo sh -c "echo 'root hard nofile 1048576' >> /etc/security/limits.conf"
+        sudo sh -c "echo '* soft nofile 1048576' >> /etc/security/limits.conf"
+        sudo sh -c "echo '* hard nofile 1048576' >> /etc/security/limits.conf"
         #sudo cat /etc/security/limits.conf
 
         # Set the core dump pattern.

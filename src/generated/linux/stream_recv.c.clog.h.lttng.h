@@ -2,6 +2,25 @@
 
 
 /*----------------------------------------------------------
+// Decoder Ring for ReliableResetNotNegotiatedError
+// [strm][%p] Received ReliableReset without negotiation.
+// QuicTraceLogStreamWarning(
+            ReliableResetNotNegotiatedError,
+            Stream,
+            "Received ReliableReset without negotiation.");
+// arg1 = arg1 = Stream = arg1
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, ReliableResetNotNegotiatedError,
+    TP_ARGS(
+        const void *, arg1), 
+    TP_FIELDS(
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
+    )
+)
+
+
+
+/*----------------------------------------------------------
 // Decoder Ring for ResetEarly
 // [strm][%p] Tried to reset at earlier final size!
 // QuicTraceLogStreamWarning(
@@ -14,7 +33,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, ResetEarly,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -33,7 +52,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, ResetTooBig,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -52,7 +71,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, ReceiveTooBig,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -71,7 +90,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, ReceiveBeyondFlowControl,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -81,16 +100,39 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, ReceiveBeyondFlowControl,
 // Decoder Ring for RemoteCloseReset
 // [strm][%p] Closed remotely (reset)
 // QuicTraceLogStreamInfo(
-                RemoteCloseReset,
-                Stream,
-                "Closed remotely (reset)");
+        RemoteCloseReset,
+        Stream,
+        "Closed remotely (reset)");
 // arg1 = arg1 = Stream = arg1
 ----------------------------------------------------------*/
 TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, RemoteCloseReset,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
+    )
+)
+
+
+
+/*----------------------------------------------------------
+// Decoder Ring for ReliableRecvOffsetSet
+// [strm][%p] Reliable recv offset set to %llu
+// QuicTraceLogStreamInfo(
+            ReliableRecvOffsetSet,
+            Stream,
+            "Reliable recv offset set to %llu",
+            ReliableOffset);
+// arg1 = arg1 = Stream = arg1
+// arg3 = arg3 = ReliableOffset = arg3
+----------------------------------------------------------*/
+TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, ReliableRecvOffsetSet,
+    TP_ARGS(
+        const void *, arg1,
+        unsigned long long, arg3), 
+    TP_FIELDS(
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
+        ctf_integer(uint64_t, arg3, arg3)
     )
 )
 
@@ -109,7 +151,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, LocalCloseStopSending,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -128,7 +170,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, TreatFinAsReset,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -147,7 +189,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, QueueRecvFlush,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -157,10 +199,10 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, QueueRecvFlush,
 // Decoder Ring for IndicatePeerSendAbort
 // [strm][%p] Indicating QUIC_STREAM_EVENT_PEER_SEND_ABORTED (0x%llX)
 // QuicTraceLogStreamVerbose(
-                IndicatePeerSendAbort,
-                Stream,
-                "Indicating QUIC_STREAM_EVENT_PEER_SEND_ABORTED (0x%llX)",
-                ErrorCode);
+        IndicatePeerSendAbort,
+        Stream,
+        "Indicating QUIC_STREAM_EVENT_PEER_SEND_ABORTED (0x%llX)",
+        ErrorCode);
 // arg1 = arg1 = Stream = arg1
 // arg3 = arg3 = ErrorCode = arg3
 ----------------------------------------------------------*/
@@ -169,7 +211,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, IndicatePeerSendAbort,
         const void *, arg1,
         unsigned long long, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(uint64_t, arg3, arg3)
     )
 )
@@ -192,7 +234,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, IndicatePeerReceiveAborted,
         const void *, arg1,
         unsigned long long, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(uint64_t, arg3, arg3)
     )
 )
@@ -212,7 +254,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, IgnoreRecvAfterClose,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -231,7 +273,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, IgnoreRecvAfterAbort,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -250,7 +292,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, FlowControlExhausted,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -278,7 +320,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, Receive,
         unsigned long long, arg4,
         unsigned char, arg5), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(unsigned short, arg3, arg3)
         ctf_integer(uint64_t, arg4, arg4)
         ctf_integer(unsigned char, arg5, arg5)
@@ -303,7 +345,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, RemoteBlocked,
         const void *, arg1,
         unsigned long long, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(uint64_t, arg3, arg3)
     )
 )
@@ -312,11 +354,11 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, RemoteBlocked,
 
 /*----------------------------------------------------------
 // Decoder Ring for IncreaseRxBuffer
-// [strm][%p] Increasing max RX buffer size to %u (MinRtt=%u; TimeNow=%u; LastUpdate=%u)
+// [strm][%p] Increasing max RX buffer size to %u (MinRtt=%llu; TimeNow=%llu; LastUpdate=%llu)
 // QuicTraceLogStreamVerbose(
                     IncreaseRxBuffer,
                     Stream,
-                    "Increasing max RX buffer size to %u (MinRtt=%u; TimeNow=%u; LastUpdate=%u)",
+                    "Increasing max RX buffer size to %u (MinRtt=%llu; TimeNow=%llu; LastUpdate=%llu)",
                     Stream->RecvBuffer.VirtualBufferLength * 2,
                     Stream->Connection->Paths[0].MinRtt,
                     TimeNow,
@@ -331,15 +373,15 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, IncreaseRxBuffer,
     TP_ARGS(
         const void *, arg1,
         unsigned int, arg3,
-        unsigned int, arg4,
-        unsigned int, arg5,
-        unsigned int, arg6), 
+        unsigned long long, arg4,
+        unsigned long long, arg5,
+        unsigned long long, arg6), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
         ctf_integer(unsigned int, arg3, arg3)
-        ctf_integer(unsigned int, arg4, arg4)
-        ctf_integer(unsigned int, arg5, arg5)
-        ctf_integer(unsigned int, arg6, arg6)
+        ctf_integer(uint64_t, arg4, arg4)
+        ctf_integer(uint64_t, arg5, arg5)
+        ctf_integer(uint64_t, arg6, arg6)
     )
 )
 
@@ -358,7 +400,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, UpdateFlowControl,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -377,7 +419,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, IgnoreRecvFlush,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -396,7 +438,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, IndicatePeerSendShutdown,
     TP_ARGS(
         const void *, arg1), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg1, arg1)
+        ctf_integer_hex(uint64_t, arg1, (uint64_t)arg1)
     )
 )
 
@@ -418,7 +460,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, StreamRecvState,
         const void *, arg2,
         unsigned char, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(unsigned char, arg3, arg3)
     )
 )
@@ -464,7 +506,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, StreamError,
         const void *, arg2,
         const char *, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_string(arg3, arg3)
     )
 )
@@ -487,7 +529,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, StreamReceiveFrame,
         const void *, arg2,
         unsigned long long, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(uint64_t, arg3, arg3)
     )
 )
@@ -507,7 +549,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, StreamReceiveFrameComplete,
     TP_ARGS(
         const void *, arg2), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
     )
 )
 
@@ -535,7 +577,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, StreamAppReceive,
         unsigned int, arg4,
         unsigned int, arg5), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(uint64_t, arg3, arg3)
         ctf_integer(unsigned int, arg4, arg4)
         ctf_integer(unsigned int, arg5, arg5)
@@ -560,7 +602,7 @@ TRACEPOINT_EVENT(CLOG_STREAM_RECV_C, StreamAppReceiveComplete,
         const void *, arg2,
         unsigned long long, arg3), 
     TP_FIELDS(
-        ctf_integer_hex(uint64_t, arg2, arg2)
+        ctf_integer_hex(uint64_t, arg2, (uint64_t)arg2)
         ctf_integer(uint64_t, arg3, arg3)
     )
 )

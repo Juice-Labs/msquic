@@ -21,6 +21,11 @@ extern QUIC_CREDENTIAL_CONFIG ServerSelfSignedCredConfig;
 extern QUIC_CREDENTIAL_CONFIG ServerSelfSignedCredConfigClientAuth;
 extern QUIC_CREDENTIAL_CONFIG ClientCertCredConfig;
 
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+extern char CurrentWorkingDirectory[MAX_PATH + 1];
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +51,7 @@ void QuicTestConfigurationParam();
 void QuicTestListenerParam();
 void QuicTestConnectionParam();
 void QuicTestTlsParam();
+void QuicTestTlsHandshakeInfo(_In_ bool EnableResumption);
 void QuicTestStreamParam();
 void QuicTestGetPerfCounters();
 void QuicTestVersionSettings();
@@ -59,6 +65,7 @@ void QuicTestRegistrationShutdownBeforeConnOpen();
 void QuicTestRegistrationShutdownAfterConnOpen();
 void QuicTestRegistrationShutdownAfterConnOpenBeforeStart();
 void QuicTestRegistrationShutdownAfterConnOpenAndStart();
+void QuicTestConnectionCloseBeforeStreamClose();
 
 //
 // Rejection Tests
@@ -70,6 +77,9 @@ void QuicTestConnectionRejection(bool RejectByClosing);
 //
 
 void QuicTestValidateConnectionEvents(uint32_t Test);
+#ifdef QUIC_API_ENABLE_PREVIEW_FEATURES
+void QuicTestValidateNetStatsConnEvent(uint32_t Test);
+#endif
 void QuicTestValidateStreamEvents(uint32_t Test);
 
 //
@@ -193,6 +203,13 @@ QuicTestReliableResetNegotiation(
     _In_ bool ServerSupport,
     _In_ bool ClientSupport
 );
+
+void
+QuicTestOneWayDelayNegotiation(
+    _In_ int Family,
+    _In_ bool ServerSupport,
+    _In_ bool ClientSupport
+    );
 #endif // QUIC_API_ENABLE_PREVIEW_FEATURES
 
 void
@@ -260,6 +277,11 @@ void
 QuicTestHandshakeSpecificLossPatterns(
     _In_ int Family,
     _In_ QUIC_CONGESTION_CONTROL_ALGORITHM CcAlgo
+    );
+
+void
+QuicTestShutdownDuringHandshake(
+    _In_ bool ClientShutdown
     );
 
 //
@@ -351,7 +373,8 @@ QuicTestNatPortRebind(
 void
 QuicTestNatAddrRebind(
     _In_ int Family,
-    _In_ uint16_t KeepAlivePaddingSize
+    _In_ uint16_t KeepAlivePaddingSize,
+    _In_ bool RebindDatapathAddr
     );
 
 void
@@ -411,6 +434,11 @@ QuicTestClientDisconnect(
     );
 
 void
+QuicTestStatelessResetKey(
+    void
+    );
+
+void
 QuicTestKeyUpdate(
     _In_ int Family,
     _In_ uint16_t Iterations,
@@ -451,6 +479,11 @@ void
 QuicAbortiveTransfers(
     _In_ int Family,
     _In_ QUIC_ABORTIVE_TRANSFER_FLAGS Flags
+    );
+
+void
+QuicCancelOnLossSend(
+    _In_ bool DropPackets
     );
 
 void
@@ -512,6 +545,10 @@ QuicTestNthAllocFail(
     );
 
 void
+QuicTestNthPacketDrop(
+    );
+
+void
 QuicTestStreamPriority(
     );
 
@@ -532,8 +569,32 @@ QuicTestStreamAbortConnFlowControl(
     );
 
 void
+QuicTestStreamReliableReset(
+    );
+
+void
+QuicTestStreamReliableResetMultipleSends(
+    );
+
+void
+QuicTestStreamMultiReceive(
+    );
+
+void
 QuicTestStreamBlockUnblockConnFlowControl(
     _In_ BOOLEAN Bidirectional
+    );
+
+void
+QuicTestOperationPriority(
+    );
+
+void
+QuicTestConnectionPriority(
+    );
+
+void
+QuicTestConnectionStreamStartSendPriority(
     );
 
 void
@@ -562,6 +623,11 @@ QuicDrillTestInitialToken(
     _In_ int Family
     );
 
+void
+QuicDrillTestServerVNPacket(
+    _In_ int Family
+    );
+
 //
 // Datagram tests
 //
@@ -573,6 +639,11 @@ QuicTestDatagramNegotiation(
 
 void
 QuicTestDatagramSend(
+    _In_ int Family
+    );
+
+void
+QuicTestDatagramDrop(
     _In_ int Family
     );
 
@@ -643,6 +714,15 @@ static const GUID QUIC_TEST_DEVICE_INSTANCE =
 //
 // IOCTL Interface
 //
+
+typedef struct {
+    BOOLEAN UseDuoNic;
+    QUIC_EXECUTION_CONFIG Config;
+    char CurrentDirectory[MAX_PATH];
+} QUIC_TEST_CONFIGURATION_PARAMS;
+
+#define IOCTL_QUIC_TEST_CONFIGURATION \
+    QUIC_CTL_CODE(0, METHOD_BUFFERED, FILE_WRITE_DATA)
 
 typedef struct {
     QUIC_CERTIFICATE_HASH ServerCertHash;
@@ -926,7 +1006,7 @@ typedef struct {
     int Family;
     BOOLEAN ServerSupport;
     BOOLEAN ClientSupport;
-} QUIC_RUN_RELIABLE_RESET_NEGOTIATION;
+} QUIC_RUN_FEATURE_NEGOTIATION;
 
 #define IOCTL_QUIC_RUN_CUSTOM_SERVER_CERT_VALIDATION \
     QUIC_CTL_CODE(47, METHOD_BUFFERED, FILE_WRITE_DATA)
@@ -1197,6 +1277,67 @@ typedef struct {
 
 #define IOCTL_QUIC_RELIABLE_RESET_NEGOTIATION \
     QUIC_CTL_CODE(111, METHOD_BUFFERED, FILE_WRITE_DATA)
-    // QUIC_RUN_RELIABLE_RESET_NEGOTIATION
+    // QUIC_RUN_FEATURE_NEGOTIATION
 
-#define QUIC_MAX_IOCTL_FUNC_CODE 111
+#define IOCTL_QUIC_ONE_WAY_DELAY_NEGOTIATION \
+    QUIC_CTL_CODE(112, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // QUIC_RUN_FEATURE_NEGOTIATION
+
+#define IOCTL_QUIC_RUN_STATELESS_RESET_KEY \
+    QUIC_CTL_CODE(113, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_STREAM_RELIABLE_RESET \
+    QUIC_CTL_CODE(114, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_STREAM_RELIABLE_RESET_MULTIPLE_SENDS \
+    QUIC_CTL_CODE(115, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_DRILL_VN_PACKET_TOKEN \
+    QUIC_CTL_CODE(116, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // int - Family
+
+#define IOCTL_QUIC_RUN_CONN_CLOSE_BEFORE_STREAM_CLOSE \
+    QUIC_CTL_CODE(117, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#pragma pack(push)
+#pragma pack(1)
+
+typedef struct {
+    bool DropPackets;
+} QUIC_RUN_CANCEL_ON_LOSS_PARAMS;
+
+#pragma pack(pop)
+
+#define IOCTL_QUIC_RUN_CANCEL_ON_LOSS \
+    QUIC_CTL_CODE(118, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // QUIC_RUN_CANCEL_ON_LOSS_PARAMS
+
+#define IOCTL_QUIC_RUN_VALIDATE_NET_STATS_CONN_EVENT \
+    QUIC_CTL_CODE(119, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // uint32_t - Test
+
+#define IOCTL_QUIC_RUN_HANDSHAKE_SHUTDOWN \
+    QUIC_CTL_CODE(120, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // BOOLEAN - ClientShutdown
+
+#define IOCTL_QUIC_RUN_NTH_PACKET_DROP \
+    QUIC_CTL_CODE(121, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_OPERATION_PRIORITY \
+    QUIC_CTL_CODE(122, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_CONNECTION_PRIORITY \
+    QUIC_CTL_CODE(123, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_STREAM_MULTI_RECEIVE \
+    QUIC_CTL_CODE(124, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_VALIDATE_TLS_HANDSHAKE_INFO \
+    QUIC_CTL_CODE(125, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // BOOLEAN - EnableResumption
+
+#define IOCTL_QUIC_RUN_DATAGRAM_DROP \
+    QUIC_CTL_CODE(126, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // int - Family
+
+#define QUIC_MAX_IOCTL_FUNC_CODE 126

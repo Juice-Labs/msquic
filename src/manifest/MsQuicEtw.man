@@ -308,6 +308,14 @@
                 message="$(string.Enum.QUIC_STREAM_SEND_STATE.FIN_ACKED)"
                 value="5"
                 />
+            <map
+                message="$(string.Enum.QUIC_STREAM_SEND_STATE.RELIABLE_RESET)"
+                value="6"
+            />
+            <map
+                message="$(string.Enum.QUIC_STREAM_SEND_STATE.RELIABLE_RESET_ACKED)"
+                value="7"
+            />
           </valueMap>
           <valueMap name="map_QUIC_STREAM_RECV_STATE">
             <map
@@ -334,6 +342,10 @@
                 message="$(string.Enum.QUIC_STREAM_RECV_STATE.FIN)"
                 value="5"
                 />
+            <map
+                message="$(string.Enum.QUIC_STREAM_RECV_STATE.RELIABLE_RESET)"
+                value="6"
+            />
           </valueMap>
           <valueMap name="map_QUIC_TRACE_PACKET_TYPE">
             <map
@@ -479,6 +491,14 @@
             <map
                 message="$(string.Enum.QUIC_TRACE_API_TYPE.DATAGRAM_SEND)"
                 value="25"
+                />
+            <map
+                message="$(string.Enum.QUIC_TRACE_API_TYPE.COMPLETE_RESUMPTION_TICKET_VALIDATION)"
+                value="26"
+                />
+            <map
+                message="$(string.Enum.QUIC_TRACE_API_TYPE.COMPLETE_CERTIFICATE_VALIDATION)"
+                value="27"
                 />
           </valueMap>
           <valueMap name="map_QUIC_SEND_FLUSH_REASON">
@@ -1136,6 +1156,44 @@
             <data
                 inType="win:UInt32"
                 name="SmoothedRtt"
+                />
+          </template>
+          <template tid="tid_CONN_OUT_FLOW_STATS_V2">
+            <data
+                inType="win:Pointer"
+                name="Connection"
+                />
+            <data
+                inType="win:UInt64"
+                name="BytesSent"
+                />
+            <data
+                inType="win:UInt32"
+                name="BytesInFlight"
+                />
+            <data
+                inType="win:UInt32"
+                name="CongestionWindow"
+                />
+            <data
+                inType="win:UInt64"
+                name="ConnectionFlowControl"
+                />
+            <data
+                inType="win:UInt64"
+                name="IdealBytes"
+                />
+            <data
+                inType="win:UInt64"
+                name="PostedBytes"
+                />
+            <data
+                inType="win:UInt64"
+                name="SmoothedRtt"
+                />
+            <data
+                inType="win:UInt64"
+                name="OneWayDelay"
                 />
           </template>
           <template tid="tid_CONN_OUT_FLOW_STREAM_STATS">
@@ -2134,6 +2192,44 @@
                 name="EcnCongestionCount"
                 />
           </template>
+          <template tid="tid_CONN_STATISTICS_V3">
+            <data
+                inType="win:Pointer"
+                name="Connection"
+                />
+            <data
+                inType="win:UInt64"
+                name="SmoothedRtt"
+                />
+            <data
+                inType="win:UInt32"
+                name="CongestionCount"
+                />
+            <data
+                inType="win:UInt32"
+                name="PersistentCongestionCount"
+                />
+            <data
+                inType="win:UInt64"
+                name="SendTotalBytes"
+                />
+            <data
+                inType="win:UInt64"
+                name="RecvTotalBytes"
+                />
+			<data
+                inType="win:UInt32"
+                name="CongestionWindow"
+                />
+            <data
+                inType="win:AnsiString"
+                name="Cc"
+                />
+            <data
+                inType="win:UInt32"
+                name="EcnCongestionCount"
+                />
+          </template>
           <template tid="tid_CONN_COUNT_COUNT">
             <data
                 inType="win:Pointer"
@@ -2944,7 +3040,7 @@
               value="5153"
               />
           <event
-              keywords="ut:Connection ut:Packet ut:RPS"
+              keywords="ut:Connection ut:Packet ut:RPS ut:LowVolume"
               level="win:Informational"
               message="$(string.Etw.ConnDropPacket)"
               opcode="Connection"
@@ -2953,7 +3049,7 @@
               value="5154"
               />
           <event
-              keywords="ut:Connection ut:Packet ut:RPS"
+              keywords="ut:Connection ut:Packet ut:RPS ut:LowVolume"
               level="win:Informational"
               message="$(string.Etw.ConnDropPacketEx)"
               opcode="Connection"
@@ -3294,6 +3390,33 @@
               template="tid_CONN_COUNT_COUNT"
               value="5192"
               />
+          <event
+              keywords="ut:Connection ut:DataFlow"
+              level="win:Verbose"
+              message="$(string.Etw.ConnOutFlowStatsV2)"
+              opcode="Connection"
+              symbol="QuicConnOutFlowStatsV2"
+              template="tid_CONN_OUT_FLOW_STATS_V2"
+              value="5193"
+              />
+          <event
+              keywords="ut:Connection ut:LowVolume"
+              level="win:Informational"
+              message="$(string.Etw.ConnStatsV2)"
+              opcode="Connection"
+              symbol="QuicConnStatsV3"
+              template="tid_CONN_STATISTICS_V3"
+              value="5194"
+              />
+          <event
+              keywords="ut:Connection ut:LowVolume"
+              level="win:Informational"
+              message="$(string.Etw.ConnDelayCloseApplicationError)"
+              opcode="Connection"
+              symbol="QuicConnDelayCloseApplicationError"
+              template="tid_CONN"
+              value="5195"
+              />
           <!-- 6144 - 7167 | Stream Events -->
           <event
               keywords="ut:Stream ut:LowVolume ut:RPS"
@@ -3513,7 +3636,7 @@
               value="7171"
               />
           <event
-              keywords="ut:Binding ut:Packet ut:RPS"
+              keywords="ut:Binding ut:Packet ut:RPS ut:LowVolume"
               level="win:Informational"
               message="$(string.Etw.BindingDropPacket)"
               opcode="Binding"
@@ -3522,7 +3645,7 @@
               value="7172"
               />
           <event
-              keywords="ut:Binding ut:Packet ut:RPS"
+              keywords="ut:Binding ut:Packet ut:RPS ut:LowVolume"
               level="win:Informational"
               message="$(string.Etw.BindingDropPacketEx)"
               opcode="Binding"
@@ -3870,6 +3993,10 @@
         <string
             id="Etw.ConnOutFlowStats"
             value="[conn][%1] OUT: BytesSent=%2 InFlight=%3 InFlightMax=%4 CWnd=%5 SSThresh=%6 ConnFC=%7 ISB=%8 PostedBytes=%9 SRtt=%10"
+            />
+        <string
+            id="Etw.ConnOutFlowStatsV2"
+            value="[conn][%1] OUT: BytesSent=%2 InFlight=%3 CWnd=%4 ConnFC=%5 ISB=%6 PostedBytes=%7 SRtt=%8 1Way=%9"
             />
         <string
             id="Etw.ConnOutFlowStreamStats"
@@ -4561,6 +4688,14 @@
             value="FIN_ACKED"
             />
         <string
+            id="Enum.QUIC_STREAM_SEND_STATE.RELIABLE_RESET"
+            value="RELIABLE_RESET"
+        />
+        <string
+            id="Enum.QUIC_STREAM_SEND_STATE.RELIABLE_RESET_ACKED"
+            value="RELIABLE_RESET_ACKED"
+        />
+        <string
             id="Enum.QUIC_STREAM_RECV_STATE.DISABLED"
             value="DISABLED"
             />
@@ -4579,6 +4714,10 @@
         <string
             id="Enum.QUIC_STREAM_RECV_STATE.RESET"
             value="RESET"
+            />
+        <string
+            id="Enum.QUIC_STREAM_RECV_STATE.RELIABLE_RESET"
+            value="RELIABLE_RESET"
             />
         <string
             id="Enum.QUIC_STREAM_RECV_STATE.FIN"
@@ -4725,6 +4864,14 @@
             value="DATAGRAM_SEND"
             />
         <string
+            id="Enum.QUIC_TRACE_API_TYPE.COMPLETE_RESUMPTION_TICKET_VALIDATION"
+            value="COMPLETE_RESUMPTION_TICKET_VALIDATION"
+            />
+        <string
+            id="Enum.QUIC_TRACE_API_TYPE.COMPLETE_CERTIFICATE_VALIDATION"
+            value="COMPLETE_CERTIFICATE_VALIDATION"
+            />
+        <string
             id="Enum.QUIC_SEND_FLUSH_REASON.CONNECTION_FLAGS"
             value="CONNECTION_FLAGS"
             />
@@ -4846,11 +4993,15 @@
             />
         <string
             id="Etw.ConnStatsV2"
-            value="[conn][%1] STATS: SRtt=%2 CongestionCount=%3 PersistentCongestionCount=%4 SendTotalBytes=%5 RecvTotalBytes=%6 CongestionWindow=%7 Cc=%8 EcnCongestionCount=%8"
+            value="[conn][%1] STATS: SRtt=%2 CongestionCount=%3 PersistentCongestionCount=%4 SendTotalBytes=%5 RecvTotalBytes=%6 CongestionWindow=%7 Cc=%8 EcnCongestionCount=%9"
             />
         <string
             id="Etw.DatapathSendTcpControl"
             value="[data][%1] Send %2 bytes TCP control packet Flags=%3 Dst=%5 Src=%7"
+            />
+        <string
+            id="Etw.ConnDelayCloseApplicationError"
+            value="[conn][%1] Received APPLICATION_ERROR error, delaying close in expectation of a 1-RTT CONNECTION_CLOSE frame."
             />
       </stringTable>
     </resources>
