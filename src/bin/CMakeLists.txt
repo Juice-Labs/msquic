@@ -263,16 +263,9 @@ if(WIN32)
 endif()
 
 if(BUILD_SHARED_LIBS)
-    install(TARGETS msquic msquic_platform inc logging_inc warnings main_binary_link_args ${OTHER_TARGETS}
-        EXPORT msquic
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    )
+  install(TARGETS msquic EXPORT msquic DESTINATION lib)
 else()
-    install(FILES "${QUIC_STATIC_LIBRARY}"
-        DESTINATION lib
-    )
+  install(FILES ${QUIC_STATIC_LIBRARY} DESTINATION lib)
 endif()
 install(FILES ${PUBLIC_HEADERS} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
