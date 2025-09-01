@@ -4457,13 +4457,8 @@ CxPlatSocketSendInline(
 
     WSAMSG WSAMhdr;
     WSAMhdr.dwFlags = 0;
-    if (Socket->HasFixedRemoteAddress) {
-        WSAMhdr.name = NULL;
-        WSAMhdr.namelen = 0;
-    } else {
-        WSAMhdr.name = (LPSOCKADDR)&SendData->MappedRemoteAddress;
-        WSAMhdr.namelen = sizeof(SendData->MappedRemoteAddress);
-    }
+    WSAMhdr.name = (LPSOCKADDR)&SendData->MappedRemoteAddress;
+    WSAMhdr.namelen = sizeof(SendData->MappedRemoteAddress);
     WSAMhdr.lpBuffers = SendData->WsaBuffers;
     WSAMhdr.dwBufferCount = SendData->WsaBufferCount;
     WSAMhdr.Control.buf = RIO_CMSG_BASE_SIZE + SendData->CtrlBuf;
